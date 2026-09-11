@@ -246,6 +246,180 @@ def guess_comtrade_columns(df: pd.DataFrame) -> dict:
     }
 
 
+# Colunas padrão de um extrato oficial do UN Comtrade (bulk download / API).
+# Quando o arquivo enviado contém esse layout, a configuração é feita
+# automaticamente, sem necessidade de mapeamento manual de colunas.
+COMTRADE_STANDARD_COLUMNS = [
+    "typeCode", "freqCode", "refPeriodId", "refYear", "refMonth", "period",
+    "reporterCode", "reporterISO", "reporterDesc", "flowCode", "flowDesc",
+    "partnerCode", "partnerISO", "partnerDesc", "partner2Code", "partner2ISO", "partner2Desc",
+    "classificationCode", "classificationSearchCode", "isOriginalClassification",
+    "cmdCode", "cmdDesc", "aggrLevel", "isLeaf", "customsCode", "customsDesc",
+    "mosCode", "motCode", "motDesc", "qtyUnitCode", "qtyUnitAbbr", "qty",
+    "isQtyEstimated", "altQtyUnitCode", "altQtyUnitAbbr", "altQty", "isAltQtyEstimated",
+    "netWgt", "isNetWgtEstimated", "grossWgt", "isGrossWgtEstimated",
+    "cifvalue", "fobvalue", "primaryValue", "legacyEstimationFlag", "isReported", "isAggregate",
+]
+
+# Colunas mínimas exigidas para considerar o arquivo como "layout padrão Comtrade"
+_COMTRADE_REQUIRED_STD_COLS = {"refYear", "cmdCode", "partnerCode", "partnerDesc", "flowCode"}
+_COMTRADE_VALUE_STD_COLS = {"primaryValue", "fobvalue", "cifvalue"}
+
+
+def is_standard_comtrade_format(df: pd.DataFrame) -> bool:
+    """Verifica se o arquivo segue o layout padrão de colunas do UN Comtrade."""
+    cols = set(df.columns)
+    return _COMTRADE_REQUIRED_STD_COLS.issubset(cols) and bool(_COMTRADE_VALUE_STD_COLS.intersection(cols))
+
+
+def _norm_code_series(s: pd.Series) -> pd.Series:
+    return s.astype(str).str.strip().str.lower().str.lstrip("0").replace({"": "0"})
+
+
+def filter_comtrade_totals(df: pd.DataFrame):
+    """
+    Reduz um extrato padrão do Comtrade às linhas de TOTAL, evitando dupla
+    contagem quando o arquivo já vem detalhado por fluxo, classificação,
+    segundo parceiro, modo de transporte/fornecimento ou procedimento
+    aduaneiro. Retorna (dataframe_filtrado, lista_de_mensagens_explicativas).
+    """
+    d = df.copy()
+    msgs = []
+
+    # Fluxo = Importação (flowCode 'M')
+    if "flowCode" in d.columns:
+        before = len(d)
+        mask = d["flowCode"].astype(str).str.upper().isin(["M", "MIP"])
+        if mask.any():
+            d = d[mask]
+            msgs.append(f"✓ Filtrado `flowCode = M` (Importação): {before:,} → {len(d):,} linhas.")
+    elif "flowDesc" in d.columns:
+        before = len(d)
+        mask = d["flowDesc"].astype(str).str.contains("import", case=False, na=False)
+        if mask.any():
+            d = d[mask]
+            msgs.append(f"✓ Filtrado `flowDesc` contendo 'Import': {before:,} → {len(d):,} linhas.")
+
+    # Nível SH6 (aggrLevel == 6; fallback: cmdCode com 6 dígitos)
+    if "aggrLevel" in d.columns:
+        before = len(d)
+        mask = pd.to_numeric(d["aggrLevel"], errors="coerce") == 6
+        if mask.any():
+            d = d[mask]
+            msgs.append(f"✓ Filtrado `aggrLevel = 6` (nível SH6): {before:,} → {len(d):,} linhas.")
+    elif "cmdCode" in d.columns:
+        before = len(d)
+        mask = d["cmdCode"].astype(str).str.extract(r"(\d+)")[0].fillna("").str.len() == 6
+        if mask.any():
+            d = d[mask]
+            msgs.append(f"✓ Filtrado `cmdCode` com 6 dígitos (nível SH6): {before:,} → {len(d):,} linhas.")
+
+    # Classificação: mantém apenas a mais frequente (evita duplicidade entre vintages, ex. H4/H5/H6)
+    if "classificationCode" in d.columns and d["classificationCode"].nunique() > 1:
+        top_class = d["classificationCode"].value_counts().idxmax()
+        before = len(d)
+        d = d[d["classificationCode"] == top_class]
+        msgs.append(f"✓ Múltiplas classificações encontradas — mantida `{top_class}` (mais frequente): {before:,} → {len(d):,} linhas.")
+
+    # Segundo parceiro (reexportação): mantém apenas partner2Code == 0 (não aplicável)
+    if "partner2Code" in d.columns and d["partner2Code"].nunique() > 1:
+        before = len(d)
+        mask = _norm_code_series(d["partner2Code"]).isin(["0"])
+        if mask.any():
+            d = d[mask]
+            msgs.append(f"✓ Filtrado `partner2Code = 0` (sem segundo parceiro): {before:,} → {len(d):,} linhas.")
+
+    # Modo de transporte / modo de fornecimento: mantém o TOTAL (código 0), se existir
+    for col, label in [("motCode", "modo de transporte"), ("mosCode", "modo de fornecimento")]:
+        if col in d.columns and d[col].nunique() > 1:
+            before = len(d)
+            mask = _norm_code_series(d[col]).isin(["0"])
+            if mask.any():
+                d = d[mask]
+                msgs.append(f"✓ Filtrado `{col} = 0` (total de {label}): {before:,} → {len(d):,} linhas.")
+
+    # Procedimento aduaneiro: mantém o total (customsCode 'C00'), se existir
+    if "customsCode" in d.columns and d["customsCode"].nunique() > 1:
+        before = len(d)
+        mask = d["customsCode"].astype(str).str.upper().isin(["C00"])
+        if mask.any():
+            d = d[mask]
+            msgs.append(f"✓ Filtrado `customsCode = C00` (total de procedimentos aduaneiros): {before:,} → {len(d):,} linhas.")
+
+    return d, msgs
+
+
+def auto_configure_comtrade(df: pd.DataFrame) -> dict:
+    """
+    Detecta e configura automaticamente um extrato padrão do UN Comtrade
+    (colunas oficiais da API/bulk download), identificando o total mundial
+    e o total do Brasil a partir dos códigos oficiais de parceiro
+    (partnerCode/partnerISO/partnerDesc) — sem necessidade de mapeamento
+    manual de colunas.
+    """
+    result = {
+        "ok": False,
+        "messages": [],
+        "year_col": None, "sh6_col": None, "sh6desc_col": None, "value_col": None,
+        "partner_col": None, "world_values": [], "brazil_values": [],
+        "filtered_df": None,
+    }
+
+    if not is_standard_comtrade_format(df):
+        result["messages"].append(
+            "O arquivo não segue o layout padrão de colunas do UN Comtrade "
+            "(refYear, cmdCode, partnerCode, partnerDesc, flowCode, primaryValue/fobvalue)."
+        )
+        return result
+
+    filtered, filter_msgs = filter_comtrade_totals(df)
+    result["messages"].extend(filter_msgs)
+
+    result["year_col"] = "refYear"
+    result["sh6_col"] = "cmdCode"
+    result["sh6desc_col"] = "cmdDesc" if "cmdDesc" in filtered.columns else None
+    result["value_col"] = (
+        "primaryValue" if "primaryValue" in filtered.columns
+        else "fobvalue" if "fobvalue" in filtered.columns
+        else "cifvalue"
+    )
+    result["partner_col"] = "partnerDesc"
+
+    # Identificação do Mundo e do Brasil pelos códigos oficiais do Comtrade
+    # (partnerCode 0 = World / 76 = Brazil; ISO 'WLD' / 'BRA'; descrição 'World' / 'Brazil')
+    idx = filtered.index
+    world_mask = pd.Series(False, index=idx)
+    brazil_mask = pd.Series(False, index=idx)
+
+    if "partnerCode" in filtered.columns:
+        pcode = _norm_code_series(filtered["partnerCode"])
+        world_mask |= pcode.isin(["0"])
+        brazil_mask |= pcode.isin(["76"])
+    if "partnerISO" in filtered.columns:
+        piso = filtered["partnerISO"].astype(str).str.strip().str.lower()
+        world_mask |= piso.isin(["wld", "w00"])
+        brazil_mask |= piso.isin(["bra"])
+    if "partnerDesc" in filtered.columns:
+        pdesc = filtered["partnerDesc"].astype(str).str.strip().str.lower()
+        world_mask |= pdesc.isin(["world"])
+        brazil_mask |= pdesc.isin(["brazil", "brasil"])
+
+    world_values = sorted(filtered.loc[world_mask, "partnerDesc"].dropna().astype(str).unique().tolist())
+    brazil_values = sorted(filtered.loc[brazil_mask, "partnerDesc"].dropna().astype(str).unique().tolist())
+
+    result["world_values"] = world_values
+    result["brazil_values"] = brazil_values
+    result["filtered_df"] = filtered
+
+    if not world_values:
+        result["messages"].append("⚠️ Não foi possível identificar linhas de **total mundial** (partnerCode = 0 / 'World').")
+    if not brazil_values:
+        result["messages"].append("⚠️ Não foi possível identificar linhas do **Brasil** (partnerCode = 76 / 'Brazil').")
+
+    result["ok"] = bool(world_values) and bool(brazil_values)
+    return result
+
+
 def standardize_comtrade(
     df: pd.DataFrame,
     year_col: str,
@@ -566,54 +740,125 @@ if comtrade_file is not None:
         st.session_state.pop("comtrade_tidy", None)
         st.session_state.pop("product_metrics", None)
         st.session_state.pop("kpis", None)
+        st.session_state.pop("_comtrade_autocfg", None)
+        st.session_state.pop("_comtrade_autocfg_for", None)
+        st.session_state["_comtrade_manual_override"] = False
 
 if "comtrade_raw" in st.session_state:
     raw = st.session_state["comtrade_raw"]
-    with st.sidebar.expander("⚙️ Mapeamento de colunas (Comtrade)", expanded="comtrade_tidy" not in st.session_state):
-        guesses = guess_comtrade_columns(raw)
-        cols = list(raw.columns)
 
-        def idx_or_0(val):
-            return cols.index(val) if val in cols else 0
+    # ---------------------------------------------------------------------
+    # Tentativa de auto-configuração (layout padrão de colunas do UN Comtrade)
+    # ---------------------------------------------------------------------
+    if st.session_state.get("_comtrade_autocfg_for") != st.session_state.get("_comtrade_raw_name"):
+        st.session_state["_comtrade_autocfg"] = auto_configure_comtrade(raw)
+        st.session_state["_comtrade_autocfg_for"] = st.session_state.get("_comtrade_raw_name")
 
-        year_col = st.selectbox("Coluna de Ano", cols, index=idx_or_0(guesses["year"]))
-        sh6_col = st.selectbox("Coluna de código SH6", cols, index=idx_or_0(guesses["sh6"]))
-        partner_col = st.selectbox("Coluna de Parceiro/Reporter", cols, index=idx_or_0(guesses["partner"]))
-        sh6desc_col = st.selectbox(
-            "Coluna de descrição SH6 (opcional)", ["(nenhuma)"] + cols,
-            index=(cols.index(guesses["sh6_desc"]) + 1) if guesses["sh6_desc"] in cols else 0,
+    autocfg = st.session_state["_comtrade_autocfg"]
+    manual_override = st.session_state.get("_comtrade_manual_override", False)
+
+    if autocfg["ok"] and not manual_override and "comtrade_tidy" not in st.session_state:
+        # Processa automaticamente assim que o arquivo padrão é detectado — sem cliques.
+        tidy = standardize_comtrade(
+            autocfg["filtered_df"], autocfg["year_col"], autocfg["partner_col"],
+            autocfg["sh6_col"], autocfg["sh6desc_col"], autocfg["value_col"],
+            autocfg["world_values"], autocfg["brazil_values"],
         )
-        value_col = st.selectbox("Coluna de Valor", cols, index=idx_or_0(guesses["value"]))
+        if not tidy.empty:
+            st.session_state["comtrade_tidy"] = tidy
+            st.session_state.pop("product_metrics", None)
+            st.session_state.pop("kpis", None)
 
-        unique_partners = sorted(raw[partner_col].dropna().astype(str).unique().tolist())
-        world_values = st.multiselect(
-            "Valor(es) = TOTAL MUNDIAL", unique_partners,
-            default=[p for p in unique_partners if "world" in p.lower() or "mundo" in p.lower()],
-        )
-        brazil_values = st.multiselect(
-            "Valor(es) = BRASIL", unique_partners,
-            default=[p for p in unique_partners if "brazil" in p.lower() or "brasil" in p.lower()],
-        )
-
-        if st.button("Processar dados do Comtrade", type="primary"):
-            if not world_values or not brazil_values:
-                st.error("Selecione ao menos um valor para Mundo e um para Brasil.")
-            else:
-                tidy = standardize_comtrade(
-                    raw, year_col, partner_col, sh6_col,
-                    None if sh6desc_col == "(nenhuma)" else sh6desc_col,
-                    value_col, world_values, brazil_values,
+    if autocfg["ok"] and not manual_override:
+        with st.sidebar.expander("✅ Comtrade — configuração automática", expanded=False):
+            st.caption("Layout padrão do UN Comtrade detectado. Configuração aplicada automaticamente:")
+            st.markdown(
+                f"- **Ano:** `{autocfg['year_col']}`\n"
+                f"- **Produto SH6:** `{autocfg['sh6_col']}`"
+                + (f" (`{autocfg['sh6desc_col']}` como descrição)" if autocfg["sh6desc_col"] else "")
+                + f"\n- **Valor:** `{autocfg['value_col']}`\n"
+                f"- **Fluxo:** Importação (`flowCode = M`)\n"
+                f"- **Total Mundial identificado em `partnerDesc`:** {', '.join(autocfg['world_values']) or '—'}\n"
+                f"- **Brasil identificado em `partnerDesc`:** {', '.join(autocfg['brazil_values']) or '—'}"
+            )
+            if autocfg["messages"]:
+                st.caption("Filtros de totalização aplicados automaticamente:")
+                for m in autocfg["messages"]:
+                    st.caption(m)
+            if "comtrade_tidy" in st.session_state:
+                tidy = st.session_state["comtrade_tidy"]
+                st.success(
+                    f"Base processada: {tidy['sh6'].nunique()} produtos SH6, "
+                    f"anos {int(tidy['ano'].min())}–{int(tidy['ano'].max())}."
                 )
-                if tidy.empty:
-                    st.error("Nenhum registro casou com os valores de Mundo/Brasil selecionados.")
+            if st.button("🔧 Ajustar manualmente"):
+                st.session_state["_comtrade_manual_override"] = True
+                st.rerun()
+    else:
+        # -------------------------------------------------------------
+        # Fallback: mapeamento manual (layout não padrão, ou ajuste solicitado)
+        # -------------------------------------------------------------
+        with st.sidebar.expander("⚙️ Mapeamento de colunas (Comtrade)", expanded=True):
+            if not autocfg["ok"]:
+                for m in autocfg["messages"]:
+                    st.caption(("⚠️ " if not m.startswith("⚠️") else "") + m)
+                st.caption("Configure manualmente as colunas abaixo.")
+            elif manual_override:
+                st.caption("Configuração automática disponível — ajuste os campos abaixo se necessário.")
+                if st.button("↩️ Voltar para configuração automática"):
+                    st.session_state["_comtrade_manual_override"] = False
+                    st.rerun()
+
+            guesses = guess_comtrade_columns(raw)
+            cols = list(raw.columns)
+
+            def idx_or_0(val):
+                return cols.index(val) if val in cols else 0
+
+            default_year = autocfg["year_col"] or guesses["year"]
+            default_sh6 = autocfg["sh6_col"] or guesses["sh6"]
+            default_partner = autocfg["partner_col"] or guesses["partner"]
+            default_sh6desc = autocfg["sh6desc_col"] or guesses["sh6_desc"]
+            default_value = autocfg["value_col"] or guesses["value"]
+
+            year_col = st.selectbox("Coluna de Ano", cols, index=idx_or_0(default_year))
+            sh6_col = st.selectbox("Coluna de código SH6", cols, index=idx_or_0(default_sh6))
+            partner_col = st.selectbox("Coluna de Parceiro/Reporter", cols, index=idx_or_0(default_partner))
+            sh6desc_col = st.selectbox(
+                "Coluna de descrição SH6 (opcional)", ["(nenhuma)"] + cols,
+                index=(cols.index(default_sh6desc) + 1) if default_sh6desc in cols else 0,
+            )
+            value_col = st.selectbox("Coluna de Valor", cols, index=idx_or_0(default_value))
+
+            unique_partners = sorted(raw[partner_col].dropna().astype(str).unique().tolist())
+            world_values = st.multiselect(
+                "Valor(es) = TOTAL MUNDIAL", unique_partners,
+                default=autocfg["world_values"] or [p for p in unique_partners if "world" in p.lower() or "mundo" in p.lower()],
+            )
+            brazil_values = st.multiselect(
+                "Valor(es) = BRASIL", unique_partners,
+                default=autocfg["brazil_values"] or [p for p in unique_partners if "brazil" in p.lower() or "brasil" in p.lower()],
+            )
+
+            if st.button("Processar dados do Comtrade", type="primary"):
+                if not world_values or not brazil_values:
+                    st.error("Selecione ao menos um valor para Mundo e um para Brasil.")
                 else:
-                    st.session_state["comtrade_tidy"] = tidy
-                    st.session_state.pop("product_metrics", None)
-                    st.session_state.pop("kpis", None)
-                    st.success(
-                        f"Base processada: {tidy['sh6'].nunique()} produtos SH6, "
-                        f"anos {int(tidy['ano'].min())}–{int(tidy['ano'].max())}."
+                    tidy = standardize_comtrade(
+                        raw, year_col, partner_col, sh6_col,
+                        None if sh6desc_col == "(nenhuma)" else sh6desc_col,
+                        value_col, world_values, brazil_values,
                     )
+                    if tidy.empty:
+                        st.error("Nenhum registro casou com os valores de Mundo/Brasil selecionados.")
+                    else:
+                        st.session_state["comtrade_tidy"] = tidy
+                        st.session_state.pop("product_metrics", None)
+                        st.session_state.pop("kpis", None)
+                        st.success(
+                            f"Base processada: {tidy['sh6'].nunique()} produtos SH6, "
+                            f"anos {int(tidy['ano'].min())}–{int(tidy['ano'].max())}."
+                        )
 
 has_comtrade = "comtrade_tidy" in st.session_state
 has_comexstat = "comexstat" in st.session_state
