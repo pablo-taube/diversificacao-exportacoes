@@ -1,6 +1,6 @@
 """
 Radar de Comércio Exterior & VCR - CNI / CIN
-Aplicação otimizada para leitura eficiente de arquivos Parquet de grande porte.
+Aplicação adaptada para o layout consolidado do Comex Stat.
 """
 from __future__ import annotations
 
@@ -15,9 +15,6 @@ import streamlit as st
 PAGE_TITLE = "Radar de Comércio Exterior & VCR - CNI / CIN"
 PAGE_ICON = "📡"
 APP_HEADER = "Radar das Exportações e Vantagem Comparativa (SH6 / CUCI / ISIC / CGCE)"
-
-DATA_DIR = os.path.join(".", "data", "tabelas_auxiliares")
-AUX_TABLES_CACHE_TTL = "24h"
 
 QUADRANTE_OPORTUNIDADE = "Mais valor, menos escala (Oportunidade)"
 QUADRANTE_VANTAGEM_NACIONAL = "Vantagem Nacional (Consolidado)"
@@ -54,17 +51,38 @@ QUADRANT_CARDS = [
     },
 ]
 
-# Colunas estritamente necessárias para processamento
-COLS_ESSENCIAIS = ["CO_NCM", "CO_PAIS", "SG_UF_NCM", "VL_FOB", "VL_FRETE", "VL_SEGURO", "KG_LIQUIDO", "QT_ESTAT"]
-NUMERIC_COLUMNS = ["QT_ESTAT", "KG_LIQUIDO", "VL_FOB", "VL_FRETE", "VL_SEGURO"]
-
-FALLBACK_LABELS = {
-    "isic_secao": "Indústria Geral",
-    "isic_divisao": "Divisão Industrial",
-    "cuci_grupo": "Grupo CUCI",
-    "cgce_1": "Bens Industriais",
-    "cgce_2": "Categoria Geral",
-    "pais": "Mundo Geral",
+# Mapeamento do novo layout de colunas da planilha
+COLUMN_MAPPING = {
+    "ANO": "ano",
+    "PAÍSES": "pais",
+    "PAISES": "pais",
+    "CÓDIGO SH6": "sh6",
+    "CODIGO SH6": "sh6",
+    "DESCRIÇÃO SH6": "desc_sh6",
+    "DESCRICAO SH6": "desc_sh6",
+    "CÓDIGO CGCE NÍVEL 2": "cgce_2_cod",
+    "CODIGO CGCE NIVEL 2": "cgce_2_cod",
+    "DESCRIÇÃO CGCE NÍVEL 2": "cgce_2",
+    "DESCRICAO CGCE NIVEL 2": "cgce_2",
+    "CÓDIGO CGCE NÍVEL 1": "cgce_1_cod",
+    "CODIGO CGCE NIVEL 1": "cgce_1_cod",
+    "DESCRIÇÃO CGCE NÍVEL 1": "cgce_1",
+    "DESCRICAO CGCE NIVEL 1": "cgce_1",
+    "CÓDIGO CUCI GRUPO": "cuci_cod",
+    "CODIGO CUCI GRUPO": "cuci_cod",
+    "DESCRIÇÃO CUCI GRUPO": "cuci_grupo",
+    "DESCRICAO CUCI GRUPO": "cuci_grupo",
+    "CÓDIGO ISIC DIVISÃO": "isic_divisao_cod",
+    "CODIGO ISIC DIVISAO": "isic_divisao_cod",
+    "DESCRIÇÃO ISIC DIVISÃO": "isic_divisao",
+    "DESCRICAO ISIC DIVISAO": "isic_divisao",
+    "CÓDIGO ISIC SEÇÃO": "isic_secao_cod",
+    "CODIGO ISIC SECAO": "isic_secao_cod",
+    "DESCRIÇÃO ISIC SEÇÃO": "isic_secao",
+    "DESCRICAO ISIC SECAO": "isic_secao",
+    "VALOR US$ FOB": "val_exp_br",
+    "VALOR FOB": "val_exp_br",
+    "VL_FOB": "val_exp_br"
 }
 
 CUSTOM_CSS = """
@@ -98,7 +116,7 @@ CUSTOM_CSS = """
 # FUNÇÕES DE FORMATAÇÃO
 # =============================================================================
 def fmt_usd(valor: float) -> str:
-    """Formata um valor bruto em dólares no padrão Bi/Mi/Mil."""
+    """Formata valor em dólares no padrão Bi/Mi/Mil."""
     if pd.isna(valor) or valor == 0:
         return "US$ 0,0"
     abs_val = abs(valor)
@@ -112,204 +130,78 @@ def fmt_usd(valor: float) -> str:
 
 
 def fmt_pct(valor: float) -> str:
-    """Formata um percentual com uma casa decimal."""
+    """Formata percentual com uma casa decimal."""
     if pd.isna(valor):
         return "0,0%"
     return f"{valor:.1f}%"
 
 # =============================================================================
-# LEITURA E OTIMIZAÇÃO DE DADOS (DATA I/O)
+# LEITURA E TRATAMENTO DOS ARQUIVOS
 # =============================================================================
-def _find_file_case_insensitive(directory: str, target_filename: str) -> str | None:
-    """Procura um arquivo no diretório ignorando case (compatibilidade Linux/Windows)."""
-    if not os.path.exists(directory):
-        return None
-    for filename in os.listdir(directory):
-        if filename.lower() == target_filename.lower():
-            return os.path.join(directory, filename)
-    return None
-
-
-def read_csv_safe(path: str) -> pd.DataFrame | None:
-    """Lê um CSV (separador ';') com busca flexível do nome e fallback de encoding."""
-    dir_name = os.path.dirname(path)
-    file_name = os.path.basename(path)
-    real_path = _find_file_case_insensitive(dir_name, file_name)
-
-    if not real_path or not os.path.exists(real_path):
-        return None
-    try:
-        return pd.read_csv(real_path, sep=";", dtype=str, encoding="utf-8")
-    except UnicodeDecodeError:
-        return pd.read_csv(real_path, sep=";", dtype=str, encoding="latin-1")
-
-
 def read_uploaded_file(file) -> pd.DataFrame | None:
-    """
-    Lê arquivos filtrando e otimizando colunas no momento da carga
-    para economizar memória RAM e evitar Out Of Memory no Streamlit Cloud.
-    """
+    """Lê e padroniza a planilha do Comex Stat ou Comtrade."""
     file_name = file.name.lower()
     df = None
 
     if file_name.endswith((".parquet", ".pq")):
-        try:
-            # Tenta carregar apenas as colunas essenciais
-            df = pd.read_parquet(file, columns=lambda c: str(c).strip().upper() in COLS_ESSENCIAIS)
-        except Exception:
-            # Fallback caso haja divergência nos nomes das colunas
-            df = pd.read_parquet(file)
-
+        df = pd.read_parquet(file)
     elif file_name.endswith(".csv"):
         try:
             df = pd.read_csv(file, sep=";", dtype=str, encoding="utf-8")
-        except UnicodeDecodeError:
+        except Exception:
             file.seek(0)
-            df = pd.read_csv(file, sep=";", dtype=str, encoding="latin-1")
+            try:
+                df = pd.read_csv(file, sep=",", dtype=str, encoding="utf-8")
+            except Exception:
+                file.seek(0)
+                df = pd.read_csv(file, sep=";", dtype=str, encoding="latin-1")
     elif file_name.endswith(".xlsx"):
         df = pd.read_excel(file, dtype=str)
     elif file_name.endswith(".json"):
         df = pd.read_json(file, dtype=str)
 
     if df is not None:
-        df.columns = [str(c).strip().upper() for c in df.columns]
-        
-        # Otimização de tipos de dados (Downcasting de memória)
-        for col in df.columns:
-            if col in NUMERIC_COLUMNS:
-                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0).astype("float32")
-            elif col in ["CO_NCM", "CO_PAIS", "SG_UF_NCM", "CO_SH6", "CMDCODE"]:
-                df[col] = df[col].astype(str)
+        # Mapear e padronizar nomes das colunas
+        upper_cols = {str(c).strip().upper(): c for c in df.columns}
+        renames = {}
+        for k_upper, orig_col in upper_cols.items():
+            if k_upper in COLUMN_MAPPING:
+                renames[orig_col] = COLUMN_MAPPING[k_upper]
 
-    return df
+        df.rename(columns=renames, inplace=True)
 
-# =============================================================================
-# CARREGAMENTO DAS TABELAS AUXILIARES
-# =============================================================================
-def _merge_aux(tables: dict, filename: str, rename_dict: dict) -> None:
-    """Funde uma tabela auxiliar (por NCM) à tabela mestre, alterando `tables` in-place."""
-    df_aux = read_csv_safe(os.path.join(DATA_DIR, filename))
-    if df_aux is None or "mestre" not in tables:
-        return
+        if "val_exp_br" in df.columns:
+            df["val_exp_br"] = pd.to_numeric(df["val_exp_br"], errors="coerce").fillna(0.0)
 
-    df_aux.rename(columns=rename_dict, inplace=True)
-    if "CO_NCM" in df_aux.columns:
-        df_aux.rename(columns={"CO_NCM": "ncm"}, inplace=True)
-    if "ncm" not in df_aux.columns:
-        return
-
-    df_aux["ncm"] = df_aux["ncm"].astype(str).str.zfill(8)
-    cols_to_use = [c for c in df_aux.columns if c not in tables["mestre"].columns or c == "ncm"]
-    tables["mestre"] = pd.merge(tables["mestre"], df_aux[cols_to_use], on="ncm", how="left")
-
-
-@st.cache_data(ttl=AUX_TABLES_CACHE_TTL)
-def load_all_auxiliary_tables() -> dict:
-    """Carrega e relaciona as 8 tabelas auxiliares oficiais da SECEX."""
-    tables: dict = {}
-
-    df_ncm = read_csv_safe(os.path.join(DATA_DIR, "NCM.csv"))
-    if df_ncm is not None:
-        df_ncm.rename(columns={"CO_NCM": "ncm", "NO_NCM": "desc_ncm"}, inplace=True)
-        df_ncm["ncm"] = df_ncm["ncm"].astype(str).str.zfill(8)
-        tables["mestre"] = df_ncm
-    else:
-        tables["mestre"] = pd.DataFrame(columns=["ncm"])
-
-    _merge_aux(tables, "NCM_ISIC.csv", {
-        "CO_ISIC_SECAO": "isic_secao", "NO_ISIC_SECAO_PT": "desc_isic_secao",
-        "CO_ISIC_DIVISAO": "isic_divisao", "NO_ISIC_DIVISAO_PT": "desc_isic_divisao",
-    })
-    _merge_aux(tables, "NCM_SH.csv", {
-        "CO_SH6": "sh6", "NO_SH6_PT": "desc_sh6",
-    })
-    _merge_aux(tables, "NCM_CUCI.csv", {
-        "CO_CUCI_GRUPO": "cuci_grupo", "NO_CUCI_GRUPO_PT": "desc_cuci",
-    })
-    _merge_aux(tables, "NCM_CGCE.csv", {
-        "CO_CGCE_N1": "cgce_1", "NO_CGCE_N1_PT": "desc_cgce_1",
-        "CO_CGCE_N2": "cgce_2", "NO_CGCE_N2_PT": "desc_cgce_2",
-    })
-
-    df_uf = read_csv_safe(os.path.join(DATA_DIR, "UF.csv"))
-    if df_uf is not None:
-        df_uf.rename(columns={"SG_UF": "uf", "NO_UF": "desc_uf"}, inplace=True)
-        tables["uf"] = df_uf
-
-    df_pais = read_csv_safe(os.path.join(DATA_DIR, "PAIS.csv"))
-    if df_pais is not None:
-        df_pais.rename(columns={"CO_PAIS": "co_pais", "NO_PAIS": "pais"}, inplace=True)
-        tables["pais"] = df_pais
-
-    return tables
-
-# =============================================================================
-# PROCESSAMENTO E CÁLCULOS
-# =============================================================================
-def process_and_enrich_comexstat(df_user: pd.DataFrame, aux_tables: dict) -> pd.DataFrame:
-    """Mapeia os códigos do Comex Stat e cruza com as tabelas de referência da SECEX."""
-    df = df_user.copy()
-
-    if "CO_NCM" in df.columns:
-        df["ncm"] = df["CO_NCM"].astype(str).str.zfill(8)
-        df["sh6"] = df["ncm"].str[:6]
-    else:
-        df["ncm"] = "00000000"
-        df["sh6"] = "000000"
-
-    df["uf"] = df["SG_UF_NCM"] if "SG_UF_NCM" in df.columns else "BR"
-
-    if "CO_PAIS" in df.columns:
-        df["co_pais"] = df["CO_PAIS"].astype(str).str.zfill(3)
-
-    is_import = "VL_FRETE" in df.columns or "VL_SEGURO" in df.columns
-
-    df["val_exp_br"] = df["VL_FOB"] if "VL_FOB" in df.columns else 0.0
-
-    if is_import:
-        frete = df["VL_FRETE"] if "VL_FRETE" in df.columns else 0.0
-        seguro = df["VL_SEGURO"] if "VL_SEGURO" in df.columns else 0.0
-        df["val_imp_br"] = df["val_exp_br"] + frete + seguro
-    else:
-        df["val_imp_br"] = df["val_exp_br"] * 0.2
-
-    df_mestre = aux_tables.get("mestre")
-    if df_mestre is not None and not df_mestre.empty:
-        cols_to_merge = [c for c in df_mestre.columns if c not in df.columns or c == "ncm"]
-        df = pd.merge(df, df_mestre[cols_to_merge], on="ncm", how="left")
-
-    if "co_pais" in df.columns and "pais" in aux_tables:
-        df = pd.merge(df, aux_tables["pais"], on="co_pais", how="left")
-
-    if "desc_sh6" not in df.columns or df["desc_sh6"].isna().all():
-        df["desc_sh6"] = "Produto SH6 " + df["sh6"]
-
-    for col_name, default_val in FALLBACK_LABELS.items():
-        if col_name not in df.columns or df[col_name].isna().all():
-            df[col_name] = default_val
+        if "sh6" in df.columns:
+            df["sh6"] = df["sh6"].astype(str).str.zfill(6)
 
     return df
 
 
 def _normalize_comtrade(df_comtrade_raw: pd.DataFrame) -> pd.DataFrame:
-    """Padroniza o dataframe do UN Comtrade para as colunas `sh6` e `val_mundo`."""
+    """Padroniza dataframe do UN Comtrade para colunas `sh6` e `val_mundo`."""
     df = df_comtrade_raw.copy()
 
     if "cmdCode" in df.columns:
         df.rename(columns={"cmdCode": "sh6", "primaryValue": "val_mundo"}, inplace=True)
-    elif "CO_SH6" in df.columns:
-        df.rename(columns={"CO_SH6": "sh6", "VL_FOB": "val_mundo"}, inplace=True)
-    elif "CO_NCM" in df.columns:
+    elif "CÓDIGO SH6" in [str(c).upper() for c in df.columns]:
+        for c in df.columns:
+            if str(c).upper() in ["CÓDIGO SH6", "CODIGO SH6"]:
+                df.rename(columns={c: "sh6"}, inplace=True)
+            if str(c).upper() in ["VALOR US$ FOB", "VALOR FOB", "VL_FOB", "PRIMARYVALUE"]:
+                df.rename(columns={c: "val_mundo"}, inplace=True)
+    elif "sh6" not in df.columns and "CO_NCM" in df.columns:
         df["sh6"] = df["CO_NCM"].astype(str).str.zfill(8).str[:6]
         df.rename(columns={"VL_FOB": "val_mundo"}, inplace=True)
 
     df["sh6"] = df["sh6"].astype(str).str.zfill(6).str[:6]
-    df["val_mundo"] = pd.to_numeric(df["val_mundo"], errors="coerce").fillna(0.0)
+    df["val_mundo"] = pd.to_numeric(df.get("val_mundo", 0.0), errors="coerce").fillna(0.0)
     return df
 
 
 def _classificar_quadrante(row: pd.Series) -> str:
-    """Classifica um produto SH6 em um dos 4 quadrantes estratégicos."""
+    """Classifica o produto SH6 nos 4 quadrantes estratégicos."""
     if row["vcr"] >= VCR_LIMIAR and row["variacao_share_5a"] < 0 and row["cagr_global_5a"] >= CAGR_GLOBAL_LIMIAR:
         return QUADRANTE_OPORTUNIDADE
     if row["vcr"] >= VCR_LIMIAR and row["variacao_share_5a"] >= 0:
@@ -321,22 +213,22 @@ def _classificar_quadrante(row: pd.Series) -> str:
 
 def process_trade_data(
     df_comex_raw: pd.DataFrame,
-    df_comtrade_raw: pd.DataFrame,
-    aux_tables: dict,
-    df_uf_raw: pd.DataFrame | None = None,
+    df_comtrade_raw: pd.DataFrame
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Enriquece dados, calcula o VCR e classifica por quadrantes estratégicos."""
-    df_comex = process_and_enrich_comexstat(df_comex_raw, aux_tables)
+    """Agrupa por SH6, calcula o VCR e atribui os quadrantes estratégicos."""
+    df_comex = df_comex_raw.copy()
     df_comtrade = _normalize_comtrade(df_comtrade_raw)
 
     tot_br_exp = float(df_comex["val_exp_br"].sum())
     tot_w_exp = float(df_comtrade["val_mundo"].sum())
 
-    br_sh6 = df_comex.groupby(
-        ["sh6", "desc_sh6", "isic_secao", "isic_divisao", "cuci_grupo", "cgce_1", "cgce_2"]
-    ).agg(val_exp_br=("val_exp_br", "sum"), val_imp_br=("val_imp_br", "sum")).reset_index()
+    group_cols = ["sh6"]
+    for c in ["desc_sh6", "isic_secao", "isic_divisao", "cuci_grupo", "cgce_1", "cgce_2"]:
+        if c in df_comex.columns:
+            group_cols.append(c)
 
-    w_sh6 = df_comtrade.groupby("sh6").agg(val_mundo=("val_mundo", "sum")).reset_index()
+    br_sh6 = df_comex.groupby(group_cols, as_index=False)["val_exp_br"].sum()
+    w_sh6 = df_comtrade.groupby("sh6", as_index=False)["val_mundo"].sum()
 
     merged = pd.merge(br_sh6, w_sh6, on="sh6", how="inner")
 
@@ -345,11 +237,24 @@ def process_trade_data(
     else:
         merged["vcr"] = 0.0
 
+    # Simulação de variações de 5 anos caso não haja histórico temporal no lote
     rng = np.random.default_rng(42)
     merged["variacao_share_5a"] = rng.uniform(-0.08, 0.08, len(merged))
     merged["cagr_global_5a"] = rng.uniform(-0.02, 0.12, len(merged))
 
     merged["quadrante"] = merged.apply(_classificar_quadrante, axis=1)
+
+    # Preencher fallbacks de colunas opcionais se ausentes
+    for c, fallback in [
+        ("desc_sh6", "Produto SH6"),
+        ("isic_secao", "Indústria Geral"),
+        ("isic_divisao", "Divisão Industrial"),
+        ("cuci_grupo", "Grupo CUCI"),
+        ("cgce_1", "Bens Industriais"),
+        ("cgce_2", "Categoria Geral")
+    ]:
+        if c not in merged.columns:
+            merged[c] = fallback
 
     return merged, df_comex
 
@@ -357,12 +262,10 @@ def process_trade_data(
 # COMPONENTES VISUAIS
 # =============================================================================
 def inject_custom_css() -> None:
-    """Injeta o CSS global na página."""
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
 def render_metric(value: str, label: str) -> None:
-    """Renderiza métricas no topo."""
     st.markdown(
         f"<div class='metric-value'>{value}</div><div class='metric-label'>{label}</div>",
         unsafe_allow_html=True,
@@ -370,7 +273,6 @@ def render_metric(value: str, label: str) -> None:
 
 
 def render_quadrant_card(color: str, title: str, desc: str, count: int, valor: float, pct: float) -> None:
-    """Renderiza card de quadrante estratégico."""
     st.markdown(f"""
         <div class="card-quadrant card-{color}">
             <div class="card-title-{color}">{title}</div>
@@ -387,7 +289,6 @@ def render_quadrant_card(color: str, title: str, desc: str, count: int, valor: f
 
 
 def render_product_card(desc_sh6: str, sh6: str, isic_divisao: str, vcr: float, valor: float) -> None:
-    """Renderiza card de produto SH6."""
     st.markdown(f"""
         <div style="background:#FFFFFF; border:1px solid #E2E8F0; padding:10px; border-radius:6px; margin-bottom:8px;">
             <b style="font-size:12px; color:#0F172A;">{desc_sh6} (SH6 {sh6})</b><br>
@@ -414,58 +315,47 @@ def init_session_state() -> None:
     st.session_state.setdefault("raw_comex", None)
 
 
-def render_sidebar(aux_tables: dict) -> tuple[int, bool, dict]:
+def render_sidebar() -> tuple[int, bool, dict]:
     st.sidebar.title("⚙️ Configurações & Upload")
     st.sidebar.markdown("---")
 
     horizonte = st.sidebar.slider("Variação temporal de cálculo:", 1, 5, 5, format="%d ano(s)")
 
-    st.sidebar.markdown("### 📤 Upload de Arquivos (Parquet ou CSV)")
+    st.sidebar.markdown("### 📤 Upload de Arquivos")
 
     uploaded_comex = st.sidebar.file_uploader(
-        "1. Arquivo Comexstat (.parquet ou .csv)",
-        type=["parquet", "pq", "csv"],
-        help="Aceita os arquivos oficiais de Exportação ou Importação do Comex Stat em formato Parquet ou CSV.",
-    )
-    uploaded_comex_uf = st.sidebar.file_uploader(
-        "2. Arquivo por Estado (Opcional)",
-        type=["parquet", "pq", "csv"],
-        help="Opcional: Recorte estadual por UF.",
+        "1. Planilha Comexstat Adaptada (.xlsx, .csv, .parquet)",
+        type=["parquet", "pq", "csv", "xlsx"],
+        help="Envie a planilha adaptada contendo as colunas do Comex Stat.",
     )
     uploaded_comtrade = st.sidebar.file_uploader(
-        "3. Arquivo UN Comtrade (Mundo)",
+        "2. Arquivo UN Comtrade (Mundo)",
         type=["parquet", "pq", "csv", "xlsx", "json"],
         help="Estatísticas globais por código HS6.",
     )
 
     st.sidebar.markdown("---")
-    btn_processar = st.sidebar.button(
-        "🚀 Executar Análise e Processar Dados", type="primary", width="stretch"
-    )
+    btn_processar = st.sidebar.button("🚀 Executar Análise", type="primary", use_container_width=True)
 
-    if aux_tables.get("mestre") is not None and not aux_tables["mestre"].empty:
-        st.sidebar.caption("✅ 8 Tabelas auxiliares ativas em `./data/tabelas_auxiliares/`")
-
-    uploads = {"comex": uploaded_comex, "comex_uf": uploaded_comex_uf, "comtrade": uploaded_comtrade}
+    uploads = {"comex": uploaded_comex, "comtrade": uploaded_comtrade}
     return horizonte, btn_processar, uploads
 
 
-def handle_processing(uploads: dict, aux_tables: dict) -> None:
+def handle_processing(uploads: dict) -> None:
     if uploads["comex"] is None or uploads["comtrade"] is None:
-        st.warning("⚠️ Faça o upload dos arquivos do Comexstat e UN Comtrade para avançar.")
+        st.warning("⚠️ Faça o upload de ambos os arquivos para executar o Radar.")
         return
 
     try:
-        with st.spinner("Lendo arquivo Parquet/CSV com otimização de colunas e memória..."):
+        with st.spinner("Processando e estruturando dados..."):
             df_cx = read_uploaded_file(uploads["comex"])
             df_ct = read_uploaded_file(uploads["comtrade"])
-            df_uf = read_uploaded_file(uploads["comex_uf"]) if uploads["comex_uf"] else None
 
-            df_res, raw_cx = process_trade_data(df_cx, df_ct, aux_tables, df_uf)
+            df_res, raw_cx = process_trade_data(df_cx, df_ct)
             st.session_state["df_processed"] = df_res
             st.session_state["raw_comex"] = raw_cx
-        st.success("✅ Arquivo lido e otimizado com sucesso!")
-    except Exception as exc:  # noqa: BLE001
+        st.success("✅ Processamento concluído com sucesso!")
+    except Exception as exc:
         st.error(f"Erro ao processar arquivo: {exc}")
         st.session_state["df_processed"] = None
 
@@ -475,15 +365,12 @@ def render_empty_state() -> None:
     with col1:
         render_metric("0", "produtos SH6 monitorados")
     with col2:
-        render_metric("0", "NCMs identificados")
+        render_metric("0", "registros processados")
     with col3:
         render_metric("US$ 0,0", "mercado total exportado (bruto)")
 
     st.markdown("<br>", unsafe_allow_html=True)
-    st.info(
-        "ℹ️ **Formatos Suportados:** Envie seu arquivo do Comex Stat em `.parquet` "
-        "ou `.csv` para rodar o cálculo de Vantagem Comparativa Revelada."
-    )
+    st.info("ℹ️ Envie a planilha adaptada do Comex Stat e os dados do UN Comtrade na barra lateral.")
 
 
 def render_header_metrics(df_main, raw_comex, horizonte: int) -> float:
@@ -493,7 +380,7 @@ def render_header_metrics(df_main, raw_comex, horizonte: int) -> float:
     with col1:
         render_metric(str(len(df_main)), "produtos SH6 monitorados")
     with col2:
-        render_metric(str(len(raw_comex["ncm"].unique())), "NCMs identificados")
+        render_metric(f"{len(raw_comex):,}", "linhas de comércio processadas")
     with col3:
         render_metric(fmt_usd(tot_val_bruto), f"mercado total exportado ({horizonte} ano/s)")
 
@@ -510,7 +397,7 @@ def render_tab_quadrantes(df_main, tot_val_bruto: float) -> None:
         valor = float(df_quad["val_exp_br"].sum())
         pct = (valor / tot_val_bruto * 100) if tot_val_bruto > 0 else 0.0
 
-        if card_cfg["quadrante"] == "Vantagem Nacional (Consolidado)":
+        if card_cfg["quadrante"] == QUADRANTE_VANTAGEM_NACIONAL:
             pct_vantagem_nacional = pct
 
         with linhas[i // 2][i % 2]:
@@ -535,13 +422,13 @@ def render_tab_isic(df_main) -> None:
 
     with col_isic_tab:
         st.markdown("#### Resumo dos Setores (ISIC Seção)")
-        df_isic_grp = df_main.groupby("isic_secao").agg(
+        df_isic_grp = df_main.groupby("isic_secao", as_index=False).agg(
             total_val_bruto=("val_exp_br", "sum"), qtd_sh6=("sh6", "count")
-        ).reset_index()
+        )
         df_isic_grp["Valor Exportado"] = df_isic_grp["total_val_bruto"].apply(fmt_usd)
         st.dataframe(
             df_isic_grp[["isic_secao", "qtd_sh6", "Valor Exportado"]],
-            hide_index=True, width="stretch",
+            hide_index=True, use_container_width=True,
         )
 
     with col_isic_prod:
@@ -564,45 +451,35 @@ def render_tab_isic(df_main) -> None:
 
 
 def render_tab_cuci(df_main, raw_comex) -> None:
-    st.subheader("Análise por Grupo CUCI, Países de Destino e Rankings Estaduais")
+    st.subheader("Análise por Grupo CUCI & Países de Destino")
     selected_cuci = st.selectbox("Selecione o Grupo CUCI:", options=list(df_main["cuci_grupo"].unique()))
     if not selected_cuci:
         return
 
     df_cuci_filtered = df_main[df_main["cuci_grupo"] == selected_cuci]
     sh6_cuci_list = df_cuci_filtered["sh6"].unique()
-    raw_cuci_ncms = raw_comex[raw_comex["sh6"].isin(sh6_cuci_list)]
+    raw_cuci = raw_comex[raw_comex["sh6"].isin(sh6_cuci_list)]
 
-    col_ncms, col_paises, col_rank_exp = st.columns([1.2, 1, 1])
+    col_prods, col_paises = st.columns([1.3, 1])
 
-    with col_ncms:
-        st.markdown("#### NCMs Vinculados")
-        ncms_summary = raw_cuci_ncms.groupby(["ncm", "desc_sh6"]).agg({"val_exp_br": "sum"}).reset_index()
-        ncms_summary["Exportação"] = ncms_summary["val_exp_br"].apply(fmt_usd)
+    with col_prods:
+        st.markdown("#### Produtos SH6 Vinculados")
+        prods_summary = raw_cuci.groupby(["sh6", "desc_sh6"], as_index=False)["val_exp_br"].sum()
+        prods_summary["Exportação"] = prods_summary["val_exp_br"].apply(fmt_usd)
         st.dataframe(
-            ncms_summary[["ncm", "desc_sh6", "Exportação"]],
-            hide_index=True, width="stretch",
+            prods_summary[["sh6", "desc_sh6", "Exportação"]],
+            hide_index=True, use_container_width=True,
         )
 
     with col_paises:
         st.markdown("#### Top Países de Destino")
-        if "pais" in raw_cuci_ncms.columns:
+        if "pais" in raw_cuci.columns:
             paises_sum = (
-                raw_cuci_ncms.groupby("pais").agg({"val_exp_br": "sum"}).reset_index()
-                .sort_values(by="val_exp_br", ascending=False).head(5)
+                raw_cuci.groupby("pais", as_index=False)["val_exp_br"].sum()
+                .sort_values(by="val_exp_br", ascending=False).head(10)
             )
             paises_sum["Valor"] = paises_sum["val_exp_br"].apply(fmt_usd)
-            st.table(paises_sum[["pais", "Valor"]].rename(columns={"pais": "País"}))
-
-    with col_rank_exp:
-        st.markdown("#### Top UFs Exportadoras")
-        if "uf" in raw_cuci_ncms.columns:
-            rank_exp = (
-                raw_cuci_ncms.groupby("uf").agg({"val_exp_br": "sum"}).reset_index()
-                .sort_values(by="val_exp_br", ascending=False).head(5)
-            )
-            rank_exp["Valor"] = rank_exp["val_exp_br"].apply(fmt_usd)
-            st.table(rank_exp[["uf", "Valor"]].rename(columns={"uf": "UF Origem"}))
+            st.dataframe(paises_sum[["pais", "Valor"]].rename(columns={"pais": "País"}), hide_index=True, use_container_width=True)
 
 
 def render_tab_cgce(df_main) -> None:
@@ -611,15 +488,15 @@ def render_tab_cgce(df_main) -> None:
 
     with c1:
         st.markdown("#### Distribuição por CGCE Nível 1")
-        cgce1_summary = df_main.groupby("cgce_1").agg({"val_exp_br": "sum", "sh6": "count"}).reset_index()
+        cgce1_summary = df_main.groupby("cgce_1", as_index=False).agg({"val_exp_br": "sum", "sh6": "count"})
         cgce1_summary["Valor"] = cgce1_summary["val_exp_br"].apply(fmt_usd)
-        st.dataframe(cgce1_summary[["cgce_1", "sh6", "Valor"]], hide_index=True, width="stretch")
+        st.dataframe(cgce1_summary[["cgce_1", "sh6", "Valor"]], hide_index=True, use_container_width=True)
 
     with c2:
         st.markdown("#### Distribuição por CGCE Nível 2")
-        cgce2_summary = df_main.groupby("cgce_2").agg({"val_exp_br": "sum", "sh6": "count"}).reset_index()
+        cgce2_summary = df_main.groupby("cgce_2", as_index=False).agg({"val_exp_br": "sum", "sh6": "count"})
         cgce2_summary["Valor"] = cgce2_summary["val_exp_br"].apply(fmt_usd)
-        st.dataframe(cgce2_summary[["cgce_2", "sh6", "Valor"]], hide_index=True, width="stretch")
+        st.dataframe(cgce2_summary[["cgce_2", "sh6", "Valor"]], hide_index=True, use_container_width=True)
 
 
 def render_main_panel(horizonte: int) -> None:
@@ -637,7 +514,7 @@ def render_main_panel(horizonte: int) -> None:
     tab_quadrantes, tab_isic, tab_cuci, tab_cgce = st.tabs([
         "📊 Visão Geral por Quadrantes",
         "🎯 Visão Estratégica da Indústria (ISIC)",
-        "🌐 Detalhamento por CUCI Grupo & UFs",
+        "🌐 Detalhamento por CUCI Grupo & Destinos",
         "📦 Classificação por CGCE (Níveis 1 e 2)",
     ])
 
@@ -655,11 +532,10 @@ def main() -> None:
     configure_page()
     init_session_state()
 
-    aux_tables = load_all_auxiliary_tables()
-    horizonte, btn_processar, uploads = render_sidebar(aux_tables)
+    horizonte, btn_processar, uploads = render_sidebar()
 
     if btn_processar:
-        handle_processing(uploads, aux_tables)
+        handle_processing(uploads)
 
     render_main_panel(horizonte)
 
