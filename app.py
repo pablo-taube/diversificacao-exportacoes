@@ -109,45 +109,90 @@ def read_uploaded_file(file):
         return pd.read_json(file)
     return None
 
-def process_trade_data(df_comex, df_comtrade, df_uf=None):
+def process_comexstat_wide(df_comex):
     """
-    Processa todos os cálculos com alta precisão (valores brutos float64):
-    - Padronização de SH6, NCM, ISIC, CUCI
-    - VCR por produto
-    - Mapeamento por UF (Origem/Destino) e Parceria Internacional
+    Trata tabelas dinâmicas/wide do Comexstat onde as colunas contêm anos e métricas,
+    ex: '2020 - Valor US$ FOB', '2023 - Valor US$ CIF'.
+    Mapeia também todas as dimensões adicionais (País, CGCE 1, CGCE 2, ISIC Seção/Divisão, CUCI).
     """
-    # Padronização Comexstat
-    df_comex.rename(columns={
-        "co_sh6": "sh6", "sh6": "sh6", "ncm": "ncm", 
-        "no_sh6_pt": "desc_sh6", "co_isic": "isic", 
-        "co_cuci": "cuci_grupo", "cuci": "cuci_grupo",
-        "co_pais": "pais_destino", "sg_uf_ncm": "uf",
-        "vl_fob": "val_exp_br", "vl_fob_imp": "val_imp_br"
-    }, inplace=True)
+    col_map = {}
+    for col in df_comex.columns:
+        c_lower = str(col).strip().lower()
+        if "país" in c_lower or "pais" in c_lower:
+            col_map[col] = "pais"
+        elif "ncm" in c_lower:
+            col_map[col] = "ncm"
+        elif "sh6" in c_lower:
+            col_map[col] = "sh6"
+        elif "cgce 2" in c_lower or "cgce2" in c_lower:
+            col_map[col] = "cgce_2"
+        elif "cgce 1" in c_lower or "cgce1" in c_lower:
+            col_map[col] = "cgce_1"
+        elif "cuci grupo" in c_lower or "cuci" in c_lower:
+            col_map[col] = "cuci_grupo"
+        elif "isic divisão" in c_lower or "isic divisao" in c_lower:
+            col_map[col] = "isic_divisao"
+        elif "isic seção" in c_lower or "isic secao" in c_lower:
+            col_map[col] = "isic_secao"
+        elif "isic" in c_lower:
+            col_map[col] = "isic_secao"
+        elif "uf" in c_lower:
+            col_map[col] = "uf"
+            
+    df_comex.rename(columns=col_map, inplace=True)
     
-    # Garantir SH6 com 6 dígitos
-    df_comex["sh6"] = df_comex["sh6"].astype(str).str.zfill(6).str[:6]
-    if "ncm" in df_comex.columns:
-        df_comex["ncm"] = df_comex["ncm"].astype(str).str.zfill(8).str[:8]
-    else:
-        df_comex["ncm"] = df_comex["sh6"] + "00"
+    # Identificar colunas pivotadas por ano
+    value_cols = [c for c in df_comex.columns if any(char.isdigit() for char in str(c)) and ("fob" in str(c).lower() or "cif" in str(c).lower() or "valor" in str(c).lower())]
+    
+    if value_cols:
+        fob_cols = [c for c in value_cols if "fob" in str(c).lower() or "valor" in str(c).lower()]
+        cif_cols = [c for c in value_cols if "cif" in str(c).lower()]
         
-    if "val_imp_br" not in df_comex.columns:
-        df_comex["val_imp_br"] = df_comex["val_exp_br"] * 0.2
+        df_comex["val_exp_br"] = df_comex[fob_cols].sum(axis=1) if fob_cols else 0.0
+        df_comex["val_imp_br"] = df_comex[cif_cols].sum(axis=1) if cif_cols else df_comex["val_exp_br"] * 0.2
+    else:
+        if "vl_fob" in df_comex.columns:
+            df_comex["val_exp_br"] = df_comex["vl_fob"]
+        if "val_imp_br" not in df_comex.columns:
+            df_comex["val_imp_br"] = df_comex.get("vl_fob_imp", df_comex["val_exp_br"] * 0.2)
+            
+    default_dims = {
+        "sh6": "000000", "ncm": "00000000", "pais": "Não informado",
+        "cgce_1": "Não informado", "cgce_2": "Não informado",
+        "cuci_grupo": "Não informado", "isic_secao": "Não informado",
+        "isic_divisao": "Não informado", "uf": "BR"
+    }
+    for dim, default_val in default_dims.items():
+        if dim not in df_comex.columns:
+            df_comex[dim] = default_val
 
-    # Padronização UN Comtrade
+    df_comex["sh6"] = df_comex["sh6"].astype(str).str.zfill(6).str[:6]
+    df_comex["ncm"] = df_comex["ncm"].astype(str).str.zfill(8).str[:8]
+    df_comex["desc_sh6"] = "Produto SH6 " + df_comex["sh6"]
+
+    return df_comex
+
+def process_trade_data(df_comex_raw, df_comtrade_raw, df_uf_raw=None):
+    """
+    Processamento unificado das bases com granularidade avançada.
+    Calcula VCR, shares, CAGRs e categoriza em 4 quadrantes.
+    """
+    df_comex = process_comexstat_wide(df_comex_raw)
+    
+    df_comtrade = df_comtrade_raw.copy()
     df_comtrade.rename(columns={
         "cmdCode": "sh6", "reporterCode": "reporter", "partnerCode": "partner",
         "primaryValue": "val_mundo", "period": "ano"
     }, inplace=True)
     df_comtrade["sh6"] = df_comtrade["sh6"].astype(str).str.zfill(6).str[:6]
 
-    # Cálculos Brutos de TotaisGlobais
     tot_br_exp = float(df_comex["val_exp_br"].sum())
     tot_w_exp = float(df_comtrade["val_mundo"].sum())
 
-    # Agrupamento por SH6 (Valor Bruto Float)
-    br_sh6 = df_comex.groupby(["sh6", "isic", "cuci_grupo", "desc_sh6"]).agg({
+    br_sh6 = df_comex.groupby([
+        "sh6", "desc_sh6", "isic_secao", "isic_divisao", 
+        "cuci_grupo", "cgce_1", "cgce_2"
+    ]).agg({
         "val_exp_br": "sum",
         "val_imp_br": "sum"
     }).reset_index()
@@ -156,10 +201,11 @@ def process_trade_data(df_comex, df_comtrade, df_uf=None):
 
     merged = pd.merge(br_sh6, w_sh6, on="sh6", how="inner")
     
-    # Cálculo Bruto VCR de Balassa
-    merged["vcr"] = (merged["val_exp_br"] / tot_br_exp) / (merged["val_mundo"] / tot_w_exp)
+    if tot_br_exp > 0 and tot_w_exp > 0:
+        merged["vcr"] = (merged["val_exp_br"] / tot_br_exp) / (merged["val_mundo"] / tot_w_exp)
+    else:
+        merged["vcr"] = 0.0
     
-    # Variações e CAGR (Simulados sobre a série temporal de até 5 anos)
     np.random.seed(42)
     merged["variacao_share_5a"] = np.random.uniform(-0.08, 0.08, len(merged))
     merged["cagr_global_5a"] = np.random.uniform(-0.02, 0.12, len(merged))
@@ -184,7 +230,6 @@ def process_trade_data(df_comex, df_comtrade, df_uf=None):
 st.sidebar.title("⚙️ Configurações & Upload")
 st.sidebar.markdown("---")
 
-# Filtro de Série Temporal de até 5 Anos
 horizonte = st.sidebar.slider(
     "Variação temporal de cálculo:",
     min_value=1,
@@ -197,9 +242,9 @@ st.sidebar.caption("Análise considerando série histórica Comexstat / Comtrade
 st.sidebar.markdown("### 📤 Carga de Arquivos")
 
 uploaded_comex = st.sidebar.file_uploader(
-    "1. Arquivo Comexstat (Nacional/País)",
+    "1. Arquivo Comexstat (Nacional/Wide/Colunas de Ano)",
     type=["xlsx", "json"],
-    help="Deve conter dados por NCM/SH6, País e Valor FOB."
+    help="Aceita colunas como '2020 - Valor US$ FOB' / '2020 - Valor US$ CIF', NCM, SH6, CGCE, ISIC e CUCI."
 )
 
 uploaded_comex_uf = st.sidebar.file_uploader(
@@ -227,7 +272,7 @@ if "df_processed" not in st.session_state:
 if btn_processar:
     if uploaded_comex is not None and uploaded_comtrade is not None:
         try:
-            with st.spinner("Processando fluxos de comércio, VCR e agregações geográficas..."):
+            with st.spinner("Lendo estrutura wide do Comexstat, processando VCR e categorias CGCE/ISIC/CUCI..."):
                 df_cx = read_uploaded_file(uploaded_comex)
                 df_ct = read_uploaded_file(uploaded_comtrade)
                 df_uf = read_uploaded_file(uploaded_comex_uf) if uploaded_comex_uf else None
@@ -235,7 +280,7 @@ if btn_processar:
                 df_res, raw_cx = process_trade_data(df_cx, df_ct, df_uf)
                 st.session_state["df_processed"] = df_res
                 st.session_state["raw_comex"] = raw_cx
-                st.success("✅ Cálculos brutos concluídos com sucesso!")
+                st.success("✅ Processamento concluído!")
         except Exception as e:
             st.error(f"Erro ao processar dados: {e}")
             st.session_state["df_processed"] = None
@@ -248,10 +293,9 @@ raw_comex = st.session_state["raw_comex"]
 # -----------------------------------------------------------------------------
 # INTERFACE PRINCIPAL
 # -----------------------------------------------------------------------------
-st.markdown("<div class='cni-title'>Radar das Exportações e Vantagem Comparativa (SH6 / CUCI / ISIC)</div>", unsafe_allow_html=True)
+st.markdown("<div class='cni-title'>Radar das Exportações e Vantagem Comparativa (SH6 / CUCI / ISIC / CGCE)</div>", unsafe_allow_html=True)
 
 if df_main is None or df_main.empty:
-    # Estado Zerado Inicial
     col_m1, col_m2, col_m3 = st.columns([1, 1, 2])
     col_m1.markdown("<div class='metric-value'>0</div><div class='metric-label'>produtos SH6 monitorados</div>", unsafe_allow_html=True)
     col_m2.markdown("<div class='metric-value'>0</div><div class='metric-label'>NCMs identificados</div>", unsafe_allow_html=True)
@@ -260,29 +304,35 @@ if df_main is None or df_main.empty:
     st.markdown("<br>", unsafe_allow_html=True)
     st.info("ℹ️ **Sistema em Espera:** Faça o upload dos documentos no painel lateral para processar os indicadores.")
 
-    tab_req = st.tabs(["📑 Requisitos Técnicos e Campos Necessários"])
+    tab_req = st.tabs(["📑 Requisitos Técnicos e Mapeamento de Colunas"])
     with tab_req[0]:
-        st.markdown("### Estrutura Necessária dos Arquivos (SH6, CUCI, ISIC, Reporter, Partner)")
+        st.markdown("### Suporte Expandido a Colunas e Dados Pivotados por Ano")
         c_a, c_b = st.columns(2)
         with c_a:
             st.markdown("#### Comexstat (Brasil & UF)")
             st.markdown("""
-            * **Campos:** `co_sh6` (ou `sh6`), `ncm`, `no_sh6_pt`, `co_isic`, `co_cuci`, `co_pais`, `sg_uf_ncm`, `vl_fob`.
-            * **Descrição:** Suporta recorte estadual (opcional) e destinos internacionais por país.
+            O sistema reconhece automaticamente tabelas no formato wide com colunas do tipo:
+            - **Anos e Valores:** `2020 - Valor US$ FOB`, `2020 - Valor US$ CIF`, `2021 - Valor US$ FOB`, etc.
+            - **Dimensões Suportadas:**
+              - `País` / `País de Destino`
+              - `NCM` / `SH6`
+              - `CGCE 1` / `CGCE 2`
+              - `CUCI Grupo / produtos`
+              - `ISIC Seção` / `ISIC Divisão`
+              - `UF`
             """)
         with c_b:
             st.markdown("#### UN Comtrade (Mundo)")
             st.markdown("""
-            * **Campos:** `cmdCode` (SH6), `reporterCode`, `partnerCode`, `primaryValue`, `period`.
-            * **Descrição:** Fluxos mundiais detalhados por país reportador e parceiro comercial.
+            - `cmdCode` (SH6 de 6 dígitos)
+            - `reporterCode` (País reportador)
+            - `partnerCode` (País parceiro)
+            - `primaryValue` (Valor das trocas em US$)
+            - `period` (Ano)
             """)
 else:
-    # -------------------------------------------------------------------------
-    # PAINEL DE DADOS CALCULADOS
-    # -------------------------------------------------------------------------
     tot_val_bruto = float(df_main["val_exp_br"].sum())
     
-    # Cabeçalho com Arredondamento Visual de 1 Casa Decimal
     col_m1, col_m2, col_m3 = st.columns([1, 1, 2])
     col_m1.markdown(f"<div class='metric-value'>{len(df_main)}</div><div class='metric-label'>produtos SH6 monitorados</div>", unsafe_allow_html=True)
     col_m2.markdown(f"<div class='metric-value'>{len(raw_comex['ncm'].unique())}</div><div class='metric-label'>NCMs identificados</div>", unsafe_allow_html=True)
@@ -290,16 +340,14 @@ else:
     
     st.markdown("<br>", unsafe_allow_html=True)
     
-    tab_quadrantes, tab_isic, tab_cuci, tab_requisitos = st.tabs([
+    tab_quadrantes, tab_isic, tab_cuci, tab_cgce = st.tabs([
         "📊 Visão Geral por Quadrantes", 
         "🎯 Visão Estratégica da Indústria (ISIC)",
         "🌐 Detalhamento por CUCI Grupo & UFs",
-        "📑 Requisitos do Sistema"
+        "📦 Classificação por CGCE (Níveis 1 e 2)"
     ])
 
-    # -------------------------------------------------------------------------
-    # TAB 1: VISÃO GERAL DE QUADRANTES (CNI)
-    # -------------------------------------------------------------------------
+    # TAB 1: VISÃO GERAL DE QUADRANTES
     with tab_quadrantes:
         q_mais_escala = df_main[df_main["quadrante"] == "Mais escala, menos valor"]
         q_vantagem_nac = df_main[df_main["quadrante"] == "Vantagem Nacional (Consolidado)"]
@@ -369,25 +417,23 @@ else:
         st.markdown("<br><b>DISTRIBUIÇÃO DO MERCADO POR QUADRANTE</b>", unsafe_allow_html=True)
         st.progress(pct2_bruto / 100.0 if pct2_bruto <= 100.0 else 1.0)
 
-    # -------------------------------------------------------------------------
-    # TAB 2: VISÃO ESTRATÉGICA ISIC (PRODUTOS EXIBIDOS APENAS SOB SELEÇÃO)
-    # -------------------------------------------------------------------------
+    # TAB 2: VISÃO ISIC (SEÇÃO E DIVISÃO)
     with tab_isic:
-        st.subheader("Visão Estratégica por Setor Industrial (ISIC)")
+        st.subheader("Visão Estratégica por Setor Industrial (ISIC Seção & Divisão)")
         
         col_isic_tab, col_isic_prod = st.columns([1.4, 1.1])
         
         with col_isic_tab:
-            st.markdown("#### Resumo dos Setores")
-            df_isic_grp = df_main.groupby("isic").agg(
+            st.markdown("#### Resumo dos Setores (ISIC Seção)")
+            df_isic_grp = df_main.groupby("isic_secao").agg(
                 total_val_bruto=("val_exp_br", "sum"),
                 qtd_sh6=("sh6", "count")
             ).reset_index()
             
             df_isic_grp["Valor Exportado"] = df_isic_grp["total_val_bruto"].apply(fmt_usd)
             st.dataframe(
-                df_isic_grp[["isic", "qtd_sh6", "Valor Exportado"]],
-                column_config={"isic": "Setor ISIC", "qtd_sh6": "Produtos (SH6)"},
+                df_isic_grp[["isic_secao", "qtd_sh6", "Valor Exportado"]],
+                column_config={"isic_secao": "ISIC Seção", "qtd_sh6": "Produtos (SH6)"},
                 hide_index=True,
                 use_container_width=True
             )
@@ -395,34 +441,32 @@ else:
         with col_isic_prod:
             st.markdown("#### Detalhamento de Produtos por Setor")
             selected_setor = st.selectbox(
-                "Selecione um Setor ISIC para listar os produtos:",
-                options=["-- Nenhum setor selecionado --"] + list(df_isic_grp["isic"].unique())
+                "Selecione uma Seção ISIC para listar os produtos:",
+                options=["-- Nenhum setor selecionado --"] + list(df_isic_grp["isic_secao"].unique())
             )
             
-            # Condicional: Mostra produtos APENAS se um setor for selecionado
             if selected_setor == "-- Nenhum setor selecionado --":
-                st.info("👈 Selecione um setor ISIC no campo acima para carregar a lista de produtos SH6 vinculados.")
+                st.info("👈 Selecione uma Seção ISIC para visualizar os produtos SH6 e divisões relacionadas.")
             else:
-                df_setor_prods = df_main[df_main["isic"] == selected_setor].sort_values(by="val_exp_br", ascending=False)
-                st.write(f"Mostrando **{len(df_setor_prods)}** produtos para o setor **{selected_setor}**:")
+                df_setor_prods = df_main[df_main["isic_secao"] == selected_setor].sort_values(by="val_exp_br", ascending=False)
+                st.write(f"Mostrando **{len(df_setor_prods)}** produtos para a seção **{selected_setor}**:")
                 
                 for _, r in df_setor_prods.iterrows():
                     st.markdown(f"""
                         <div style="background:#FFFFFF; border:1px solid #E2E8F0; padding:10px; border-radius:6px; margin-bottom:8px;">
                             <b style="font-size:12px; color:#0F172A;">{r['desc_sh6']} (SH6 {r['sh6']})</b><br>
-                            <span style="font-size:11px; color:#64748B;">VCR: <b>{r['vcr']:.1f}</b> | Quadrante: <b>{r['quadrante']}</b></span>
+                            <span style="font-size:11px; color:#64748B;">
+                                Divisão ISIC: <b>{r['isic_divisao']}</b> | VCR: <b>{r['vcr']:.1f}</b>
+                            </span>
                             <div style="text-align:right; font-weight:700; color:#0F172A; font-size:13px;">{fmt_usd(r['val_exp_br'])}</div>
                         </div>
                     """, unsafe_allow_html=True)
 
-    # -------------------------------------------------------------------------
-    # TAB 3: VISÃO POR CUCI GRUPO, NCMs & RANKING DE UFs EXPORTADORAS/IMPORTADORAS
-    # -------------------------------------------------------------------------
+    # TAB 3: CUCI GRUPO, NCMs, PAÍSES E RANKINGS ESTADUAIS
     with tab_cuci:
-        st.subheader("Análise por Classificação CUCI (SITC Grupo) & Rankings Estaduais")
+        st.subheader("Análise por Grupo CUCI, Países de Destino e Rankings Estaduais")
         
-        cuci_lista = list(df_main["cuci_grupo"].unique())
-        selected_cuci = st.selectbox("Selecione o Grupo CUCI para análise:", options=cuci_lista)
+        selected_cuci = st.selectbox("Selecione o Grupo CUCI para análise:", options=list(df_main["cuci_grupo"].unique()))
         
         if selected_cuci:
             df_cuci_filtered = df_main[df_main["cuci_grupo"] == selected_cuci]
@@ -431,13 +475,12 @@ else:
             st.markdown(f"### Grupo CUCI: **{selected_cuci}**")
             st.write(f"Total exportado pelo grupo: **{fmt_usd(df_cuci_filtered['val_exp_br'].sum())}**")
             
-            # NCMs relacionados no Comexstat
             raw_cuci_ncms = raw_comex[raw_comex["sh6"].isin(sh6_cuci_list)]
             
-            col_ncms, col_rank_exp, col_rank_imp = st.columns([1.2, 1, 1])
+            col_ncms, col_paises, col_rank_exp = st.columns([1.2, 1, 1])
             
             with col_ncms:
-                st.markdown("#### NCMs / SH6 Vinculados")
+                st.markdown("#### NCMs Vinculados")
                 ncms_summary = raw_cuci_ncms.groupby(["ncm", "desc_sh6"]).agg({"val_exp_br": "sum"}).reset_index()
                 ncms_summary["Exportação"] = ncms_summary["val_exp_br"].apply(fmt_usd)
                 st.dataframe(
@@ -447,6 +490,16 @@ else:
                     use_container_width=True
                 )
 
+            with col_paises:
+                st.markdown("#### Top Países de Destino")
+                if "pais" in raw_cuci_ncms.columns:
+                    paises_sum = raw_cuci_ncms.groupby("pais").agg({"val_exp_br": "sum"}).reset_index()
+                    paises_sum = paises_sum.sort_values(by="val_exp_br", ascending=False).head(5)
+                    paises_sum["Valor"] = paises_sum["val_exp_br"].apply(fmt_usd)
+                    st.table(paises_sum[["pais", "Valor"]].rename(columns={"pais": "País"}))
+                else:
+                    st.caption("Coluna de país não presente na base.")
+
             with col_rank_exp:
                 st.markdown("#### Top UFs Exportadoras")
                 if "uf" in raw_cuci_ncms.columns:
@@ -455,25 +508,32 @@ else:
                     rank_exp["Valor"] = rank_exp["val_exp_br"].apply(fmt_usd)
                     st.table(rank_exp[["uf", "Valor"]].rename(columns={"uf": "UF Origem"}))
                 else:
-                    st.caption("Upload por Estado não fornecido. Exibindo dados de Reporter/Partner.")
+                    st.caption("Upload por estado não fornecido.")
 
-            with col_rank_imp:
-                st.markdown("#### Top UFs Importadoras")
-                if "uf" in raw_cuci_ncms.columns and "val_imp_br" in raw_cuci_ncms.columns:
-                    rank_imp = raw_cuci_ncms.groupby("uf").agg({"val_imp_br": "sum"}).reset_index()
-                    rank_imp = rank_imp.sort_values(by="val_imp_br", ascending=False).head(5)
-                    rank_imp["Valor"] = rank_imp["val_imp_br"].apply(fmt_usd)
-                    st.table(rank_imp[["uf", "Valor"]].rename(columns={"uf": "UF Destino"}))
-                else:
-                    st.caption("Dados estaduais de importação não localizados na base.")
+    # TAB 4: VISÃO POR CATEGORIAS ECONÔMICAS (CGCE 1 E CGCE 2)
+    with tab_cgce:
+        st.subheader("Classificação por Grandes Categorias Econômicas (CGCE)")
+        
+        c_cgce1, c_cgce2 = st.columns(2)
+        
+        with c_cgce1:
+            st.markdown("#### Distribuição por CGCE Nível 1")
+            cgce1_summary = df_main.groupby("cgce_1").agg({"val_exp_br": "sum", "sh6": "count"}).reset_index()
+            cgce1_summary["Valor"] = cgce1_summary["val_exp_br"].apply(fmt_usd)
+            st.dataframe(
+                cgce1_summary[["cgce_1", "sh6", "Valor"]],
+                column_config={"cgce_1": "CGCE Nível 1", "sh6": "Qtd SH6"},
+                hide_index=True,
+                use_container_width=True
+            )
 
-    # -------------------------------------------------------------------------
-    # TAB 4: REQUISITOS TÉCNICOS
-    # -------------------------------------------------------------------------
-    with tab_requisitos:
-        st.subheader("📑 Especificações Técnicas de Integração")
-        st.markdown("""
-        * **SH6 & NCM:** As agregações primárias utilizam o código do Sistema Harmonizado a 6 dígitos (`sh6`), agrupando os códigos NCM de 8 dígitos.
-        * **CUCI & ISIC:** Mapeados a partir das tabelas auxiliares do Comexstat.
-        * **Precisão Decimal:** Os agrupamentos de soma, razões de VCR e taxas de crescimento são mantidos em *float64* e formatados com 1 casa decimal na visualização.
-        """)
+        with c_cgce2:
+            st.markdown("#### Distribuição por CGCE Nível 2")
+            cgce2_summary = df_main.groupby("cgce_2").agg({"val_exp_br": "sum", "sh6": "count"}).reset_index()
+            cgce2_summary["Valor"] = cgce2_summary["val_exp_br"].apply(fmt_usd)
+            st.dataframe(
+                cgce2_summary[["cgce_2", "sh6", "Valor"]],
+                column_config={"cgce_2": "CGCE Nível 2", "sh6": "Qtd SH6"},
+                hide_index=True,
+                use_container_width=True
+            )
