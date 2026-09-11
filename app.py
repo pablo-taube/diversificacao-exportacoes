@@ -1,6 +1,6 @@
 """
 Radar de Comércio Exterior & VCR - CNI / CIN
-Aplicação consolidada e pronta para implantação.
+Aplicação otimizada para leitura eficiente de arquivos Parquet de grande porte.
 """
 from __future__ import annotations
 
@@ -54,6 +54,8 @@ QUADRANT_CARDS = [
     },
 ]
 
+# Colunas estritamente necessárias para processamento
+COLS_ESSENCIAIS = ["CO_NCM", "CO_PAIS", "SG_UF_NCM", "VL_FOB", "VL_FRETE", "VL_SEGURO", "KG_LIQUIDO", "QT_ESTAT"]
 NUMERIC_COLUMNS = ["QT_ESTAT", "KG_LIQUIDO", "VL_FOB", "VL_FRETE", "VL_SEGURO"]
 
 FALLBACK_LABELS = {
@@ -116,7 +118,7 @@ def fmt_pct(valor: float) -> str:
     return f"{valor:.1f}%"
 
 # =============================================================================
-# LEITURA DE DADOS (DATA I/O)
+# LEITURA E OTIMIZAÇÃO DE DADOS (DATA I/O)
 # =============================================================================
 def _find_file_case_insensitive(directory: str, target_filename: str) -> str | None:
     """Procura um arquivo no diretório ignorando case (compatibilidade Linux/Windows)."""
@@ -144,14 +146,20 @@ def read_csv_safe(path: str) -> pd.DataFrame | None:
 
 def read_uploaded_file(file) -> pd.DataFrame | None:
     """
-    Lê arquivos nos layouts oficiais do Comex Stat (Exportação / Importação),
-    suportando Parquet, CSV, Excel (.xlsx) e JSON.
+    Lê arquivos filtrando e otimizando colunas no momento da carga
+    para economizar memória RAM e evitar Out Of Memory no Streamlit Cloud.
     """
     file_name = file.name.lower()
     df = None
 
     if file_name.endswith((".parquet", ".pq")):
-        df = pd.read_parquet(file)
+        try:
+            # Tenta carregar apenas as colunas essenciais
+            df = pd.read_parquet(file, columns=lambda c: str(c).strip().upper() in COLS_ESSENCIAIS)
+        except Exception:
+            # Fallback caso haja divergência nos nomes das colunas
+            df = pd.read_parquet(file)
+
     elif file_name.endswith(".csv"):
         try:
             df = pd.read_csv(file, sep=";", dtype=str, encoding="utf-8")
@@ -165,9 +173,13 @@ def read_uploaded_file(file) -> pd.DataFrame | None:
 
     if df is not None:
         df.columns = [str(c).strip().upper() for c in df.columns]
-        for col in NUMERIC_COLUMNS:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+        
+        # Otimização de tipos de dados (Downcasting de memória)
+        for col in df.columns:
+            if col in NUMERIC_COLUMNS:
+                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0).astype("float32")
+            elif col in ["CO_NCM", "CO_PAIS", "SG_UF_NCM", "CO_SH6", "CMDCODE"]:
+                df[col] = df[col].astype(str)
 
     return df
 
@@ -444,7 +456,7 @@ def handle_processing(uploads: dict, aux_tables: dict) -> None:
         return
 
     try:
-        with st.spinner("Lendo arquivo Parquet/CSV e aplicando de/para relacional da SECEX..."):
+        with st.spinner("Lendo arquivo Parquet/CSV com otimização de colunas e memória..."):
             df_cx = read_uploaded_file(uploads["comex"])
             df_ct = read_uploaded_file(uploads["comtrade"])
             df_uf = read_uploaded_file(uploads["comex_uf"]) if uploads["comex_uf"] else None
@@ -452,7 +464,7 @@ def handle_processing(uploads: dict, aux_tables: dict) -> None:
             df_res, raw_cx = process_trade_data(df_cx, df_ct, aux_tables, df_uf)
             st.session_state["df_processed"] = df_res
             st.session_state["raw_comex"] = raw_cx
-        st.success("✅ Arquivo Parquet/CSV lido e processado com sucesso!")
+        st.success("✅ Arquivo lido e otimizado com sucesso!")
     except Exception as exc:  # noqa: BLE001
         st.error(f"Erro ao processar arquivo: {exc}")
         st.session_state["df_processed"] = None
