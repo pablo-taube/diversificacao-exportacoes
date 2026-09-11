@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -12,66 +13,27 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Estilização CSS customizada (CNI / Cupertino Style)
+# Estilização CSS CNI / Cupertino
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-    
-    html, body, [class*="css"] {
-        font-family: 'Inter', sans-serif;
-        background-color: #F8FAFC;
-    }
-    .cni-title {
-        font-size: 24px;
-        font-weight: 700;
-        color: #0F172A;
-        margin-bottom: 8px;
-    }
-    .metric-value {
-        font-size: 26px;
-        font-weight: 800;
-        color: #0F172A;
-        line-height: 1.1;
-    }
-    .metric-label {
-        font-size: 12px;
-        color: #64748B;
-        font-weight: 500;
-    }
-    .card-quadrant {
-        border-radius: 12px;
-        padding: 18px;
-        height: 100%;
-        background-color: #FFFFFF;
-        border: 1px solid #E2E8F0;
-    }
+    html, body, [class*="css"] { font-family: 'Inter', sans-serif; background-color: #F8FAFC; }
+    .cni-title { font-size: 24px; font-weight: 700; color: #0F172A; margin-bottom: 8px; }
+    .metric-value { font-size: 26px; font-weight: 800; color: #0F172A; line-height: 1.1; }
+    .metric-label { font-size: 12px; color: #64748B; font-weight: 500; }
+    .card-quadrant { border-radius: 12px; padding: 18px; height: 100%; background-color: #FFFFFF; border: 1px solid #E2E8F0; }
     .card-orange { background-color: #FFFBEB; border: 1px solid #FDE68A; }
     .card-green { background-color: #ECFDF5; border: 1px solid #A7F3D0; }
     .card-red { background-color: #FEF2F2; border: 1px solid #FECACA; }
     .card-amber { background-color: #FFF7ED; border: 1px solid #FFEDD5; }
-    
     .card-title-orange { color: #D97706; font-weight: 700; font-size: 15px; }
     .card-title-green { color: #059669; font-weight: 700; font-size: 15px; }
     .card-title-red { color: #DC2626; font-weight: 700; font-size: 15px; }
     .card-title-amber { color: #EA580C; font-weight: 700; font-size: 15px; }
-    
-    .card-desc {
-        font-size: 11px;
-        color: #64748B;
-        margin-top: 4px;
-        margin-bottom: 12px;
-    }
+    .card-desc { font-size: 11px; color: #64748B; margin-top: 4px; margin-bottom: 12px; }
     .card-stat-count { font-size: 24px; font-weight: 800; color: #0F172A; }
     .card-stat-val { font-size: 18px; font-weight: 800; color: #0F172A; text-align: right; }
-    
-    .badge-percent {
-        display: inline-block;
-        padding: 2px 8px;
-        border-radius: 12px;
-        font-size: 11px;
-        font-weight: 600;
-        float: right;
-    }
+    .badge-percent { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; float: right; }
     .badge-orange { background-color: #FEF3C7; color: #B45309; }
     .badge-green { background-color: #D1FAE5; color: #047857; }
     .badge-red { background-color: #FEE2E2; color: #B91C1C; }
@@ -80,10 +42,9 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# FUNÇÕES DE FORMATAÇÃO E CÁLCULO BRUTO
+# FUNÇÕES DE FORMATAÇÃO E CÁLCULOS BRUTOS
 # -----------------------------------------------------------------------------
 def fmt_usd(val_bruto):
-    """Converte valor bruto (float) para texto legível com 1 casa decimal."""
     if pd.isna(val_bruto) or val_bruto == 0:
         return "US$ 0,0"
     abs_val = abs(val_bruto)
@@ -96,98 +57,200 @@ def fmt_usd(val_bruto):
     return f"US$ {val_bruto:.1f}"
 
 def fmt_pct(val_bruto):
-    """Converte valor percentual bruto (float) para 1 casa decimal."""
     if pd.isna(val_bruto):
         return "0,0%"
     return f"{val_bruto:.1f}%"
 
-def read_uploaded_file(file):
-    """Lê arquivos nos formatos Excel (.xlsx), JSON (.json) e Parquet (.parquet / .pq)."""
-    file_name = file.name.lower()
-    if file_name.endswith(".xlsx"):
-        return pd.read_excel(file)
-    elif file_name.endswith(".json"):
-        return pd.read_json(file)
-    elif file_name.endswith(".parquet") or file_name.endswith(".pq"):
-        return pd.read_parquet(file)
-    return None
+def read_csv_safe(path):
+    if not os.path.exists(path):
+        return None
+    try:
+        return pd.read_csv(path, sep=";", dtype=str, encoding="utf-8")
+    except UnicodeDecodeError:
+        return pd.read_csv(path, sep=";", dtype=str, encoding="latin-1")
 
-def process_comexstat_wide(df_comex):
-    """
-    Trata tabelas dinâmicas/wide do Comexstat onde as colunas contêm anos e métricas,
-    ex: '2020 - Valor US$ FOB', '2023 - Valor US$ CIF'.
-    Mapeia também todas as dimensões adicionais (País, CGCE 1, CGCE 2, ISIC Seção/Divisão, CUCI).
-    """
-    col_map = {}
-    for col in df_comex.columns:
-        c_lower = str(col).strip().lower()
-        if "país" in c_lower or "pais" in c_lower:
-            col_map[col] = "pais"
-        elif "ncm" in c_lower:
-            col_map[col] = "ncm"
-        elif "sh6" in c_lower:
-            col_map[col] = "sh6"
-        elif "cgce 2" in c_lower or "cgce2" in c_lower:
-            col_map[col] = "cgce_2"
-        elif "cgce 1" in c_lower or "cgce1" in c_lower:
-            col_map[col] = "cgce_1"
-        elif "cuci grupo" in c_lower or "cuci" in c_lower:
-            col_map[col] = "cuci_grupo"
-        elif "isic divisão" in c_lower or "isic divisao" in c_lower:
-            col_map[col] = "isic_divisao"
-        elif "isic seção" in c_lower or "isic secao" in c_lower:
-            col_map[col] = "isic_secao"
-        elif "isic" in c_lower:
-            col_map[col] = "isic_secao"
-        elif "uf" in c_lower:
-            col_map[col] = "uf"
-            
-    df_comex.rename(columns=col_map, inplace=True)
+# -----------------------------------------------------------------------------
+# CARREGAMENTO INTEGRAL DAS 8 TABELAS AUXILIARES DA SECEX
+# -----------------------------------------------------------------------------
+DATA_DIR = os.path.join(".", "data", "tabelas_auxiliares")
+
+@st.cache_data(ttl="24h")
+def load_all_auxiliary_tables():
+    tables = {}
     
-    # Identificar colunas pivotadas por ano
-    value_cols = [c for c in df_comex.columns if any(char.isdigit() for char in str(c)) and ("fob" in str(c).lower() or "cif" in str(c).lower() or "valor" in str(c).lower())]
-    
-    if value_cols:
-        fob_cols = [c for c in value_cols if "fob" in str(c).lower() or "valor" in str(c).lower()]
-        cif_cols = [c for c in value_cols if "cif" in str(c).lower()]
-        
-        df_comex["val_exp_br"] = df_comex[fob_cols].sum(axis=1) if fob_cols else 0.0
-        df_comex["val_imp_br"] = df_comex[cif_cols].sum(axis=1) if cif_cols else df_comex["val_exp_br"] * 0.2
+    # 1. Tabela NCM Base
+    df_ncm = read_csv_safe(os.path.join(DATA_DIR, "NCM.csv"))
+    if df_ncm is not None:
+        df_ncm.rename(columns={"CO_NCM": "ncm", "NO_NCM": "desc_ncm"}, inplace=True)
+        df_ncm["ncm"] = df_ncm["ncm"].astype(str).str.zfill(8)
+        tables["mestre"] = df_ncm
     else:
-        if "vl_fob" in df_comex.columns:
-            df_comex["val_exp_br"] = df_comex["vl_fob"]
-        if "val_imp_br" not in df_comex.columns:
-            df_comex["val_imp_br"] = df_comex.get("vl_fob_imp", df_comex["val_exp_br"] * 0.2)
-            
-    default_dims = {
-        "sh6": "000000", "ncm": "00000000", "pais": "Não informado",
-        "cgce_1": "Não informado", "cgce_2": "Não informado",
-        "cuci_grupo": "Não informado", "isic_secao": "Não informado",
-        "isic_divisao": "Não informado", "uf": "BR"
+        tables["mestre"] = pd.DataFrame(columns=["ncm"])
+
+    def merge_aux(filename, rename_dict):
+        df_aux = read_csv_safe(os.path.join(DATA_DIR, filename))
+        if df_aux is not None and "mestre" in tables:
+            df_aux.rename(columns=rename_dict, inplace=True)
+            if "CO_NCM" in df_aux.columns:
+                df_aux.rename(columns={"CO_NCM": "ncm"}, inplace=True)
+            if "ncm" in df_aux.columns:
+                df_aux["ncm"] = df_aux["ncm"].astype(str).str.zfill(8)
+                cols_to_use = [c for c in df_aux.columns if c not in tables["mestre"].columns or c == "ncm"]
+                tables["mestre"] = pd.merge(tables["mestre"], df_aux[cols_to_use], on="ncm", how="left")
+
+    # 2. NCM_ISIC.csv
+    merge_aux("NCM_ISIC.csv", {
+        "CO_ISIC_SECAO": "isic_secao", "NO_ISIC_SECAO_PT": "desc_isic_secao",
+        "CO_ISIC_DIVISAO": "isic_divisao", "NO_ISIC_DIVISAO_PT": "desc_isic_divisao"
+    })
+
+    # 3. NCM_SH.csv
+    merge_aux("NCM_SH.csv", {
+        "CO_SH6": "sh6", "NO_SH6_PT": "desc_sh6"
+    })
+
+    # 4. NCM_CUCI.csv
+    merge_aux("NCM_CUCI.csv", {
+        "CO_CUCI_GRUPO": "cuci_grupo", "NO_CUCI_GRUPO_PT": "desc_cuci"
+    })
+
+    # 5. NCM_CGCE.csv
+    merge_aux("NCM_CGCE.csv", {
+        "CO_CGCE_N1": "cgce_1", "NO_CGCE_N1_PT": "desc_cgce_1",
+        "CO_CGCE_N2": "cgce_2", "NO_CGCE_N2_PT": "desc_cgce_2"
+    })
+
+    # 6. UF.csv
+    df_uf = read_csv_safe(os.path.join(DATA_DIR, "UF.csv"))
+    if df_uf is not None:
+        df_uf.rename(columns={"SG_UF": "uf", "NO_UF": "desc_uf"}, inplace=True)
+        tables["uf"] = df_uf
+
+    # 7. PAIS.csv
+    df_pais = read_csv_safe(os.path.join(DATA_DIR, "PAIS.csv"))
+    if df_pais is not None:
+        df_pais.rename(columns={"CO_PAIS": "co_pais", "NO_PAIS": "pais"}, inplace=True)
+        tables["pais"] = df_pais
+
+    return tables
+
+AUX_TABLES = load_all_auxiliary_tables()
+
+# -----------------------------------------------------------------------------
+# LEITURA E TRATAMENTO DOS ARQUIVOS COMEX STAT (SUPORTE NATIVO A PARQUET E CSV)
+# -----------------------------------------------------------------------------
+def read_uploaded_file(file):
+    """
+    Lê arquivos nos layouts oficiais do Comex Stat (Exportação / Importação),
+    suportando arquivos em formato Apache Parquet e CSV.
+    """
+    file_name = file.name.lower()
+    df = None
+    
+    # 1. Leitura do Parquet
+    if file_name.endswith(".parquet") or file_name.endswith(".pq"):
+        df = pd.read_parquet(file)
+    # 2. Leitura do CSV
+    elif file_name.endswith(".csv"):
+        try:
+            df = pd.read_csv(file, sep=";", dtype=str, encoding="utf-8")
+        except UnicodeDecodeError:
+            file.seek(0)
+            df = pd.read_csv(file, sep=";", dtype=str, encoding="latin-1")
+    elif file_name.endswith(".xlsx"):
+        df = pd.read_excel(file, dtype=str)
+    elif file_name.endswith(".json"):
+        df = pd.read_json(file, dtype=str)
+        
+    if df is not None:
+        # Padroniza nomes das colunas para maiúsculo
+        df.columns = [str(c).strip().upper() for c in df.columns]
+        
+        # Converte e garante tipo float para métricas numéricas do Comex Stat
+        numeric_cols = ["QT_ESTAT", "KG_LIQUIDO", "VL_FOB", "VL_FRETE", "VL_SEGURO"]
+        for num_c in numeric_cols:
+            if num_c in df.columns:
+                df[num_c] = pd.to_numeric(df[num_c], errors="coerce").fillna(0.0)
+                
+    return df
+
+def process_and_enrich_comexstat(df_user):
+    """
+    Processa o DataFrame (oriundo de CSV ou Parquet), mapeia os códigos e
+    executa o merge relacional com as tabelas de referência da SECEX.
+    """
+    df = df_user.copy()
+    
+    # Validação do campo NCM
+    if "CO_NCM" in df.columns:
+        df["ncm"] = df["CO_NCM"].astype(str).str.zfill(8)
+        df["sh6"] = df["ncm"].str[:6]
+    else:
+        df["ncm"] = "00000000"
+        df["sh6"] = "000000"
+
+    if "SG_UF_NCM" in df.columns:
+        df["uf"] = df["SG_UF_NCM"]
+    else:
+        df["uf"] = "BR"
+
+    if "CO_PAIS" in df.columns:
+        df["co_pais"] = df["CO_PAIS"].astype(str).str.zfill(3)
+
+    # Identificação de Fluxo Importador (VL_FOB + VL_FRETE + VL_SEGURO) vs Exportação
+    is_import = "VL_FRETE" in df.columns or "VL_SEGURO" in df.columns
+    
+    if "VL_FOB" in df.columns:
+        df["val_exp_br"] = df["VL_FOB"]
+    else:
+        df["val_exp_br"] = 0.0
+
+    if is_import:
+        frete = df["VL_FRETE"] if "VL_FRETE" in df.columns else 0.0
+        seguro = df["VL_SEGURO"] if "VL_SEGURO" in df.columns else 0.0
+        df["val_imp_br"] = df["val_exp_br"] + frete + seguro
+    else:
+        df["val_imp_br"] = df["val_exp_br"] * 0.2
+
+    # Cruzamento com Tabelas Auxiliares
+    if "mestre" in AUX_TABLES and not AUX_TABLES["mestre"].empty:
+        df_mestre = AUX_TABLES["mestre"]
+        cols_to_merge = [c for c in df_mestre.columns if c not in df.columns or c == "ncm"]
+        df = pd.merge(df, df_mestre[cols_to_merge], on="ncm", how="left")
+
+    if "co_pais" in df.columns and "pais" in AUX_TABLES:
+        df = pd.merge(df, AUX_TABLES["pais"], on="co_pais", how="left")
+
+    # Descrições Padrão de Fallback
+    defaults = {
+        "desc_sh6": "Produto SH6 " + df["sh6"],
+        "isic_secao": "Indústria Geral",
+        "isic_divisao": "Divisão Industrial",
+        "cuci_grupo": "Grupo CUCI",
+        "cgce_1": "Bens Industriais",
+        "cgce_2": "Categoria Geral",
+        "pais": "Mundo Geral"
     }
-    for dim, default_val in default_dims.items():
-        if dim not in df_comex.columns:
-            df_comex[dim] = default_val
+    for col_name, def_val in defaults.items():
+        if col_name not in df.columns or df[col_name].isna().all():
+            df[col_name] = def_val
 
-    df_comex["sh6"] = df_comex["sh6"].astype(str).str.zfill(6).str[:6]
-    df_comex["ncm"] = df_comex["ncm"].astype(str).str.zfill(8).str[:8]
-    df_comex["desc_sh6"] = "Produto SH6 " + df_comex["sh6"]
-
-    return df_comex
+    return df
 
 def process_trade_data(df_comex_raw, df_comtrade_raw, df_uf_raw=None):
-    """
-    Processamento unificado das bases com granularidade avançada.
-    Calcula VCR, shares, CAGRs e categoriza em 4 quadrantes.
-    """
-    df_comex = process_comexstat_wide(df_comex_raw)
+    df_comex = process_and_enrich_comexstat(df_comex_raw)
     
     df_comtrade = df_comtrade_raw.copy()
-    df_comtrade.rename(columns={
-        "cmdCode": "sh6", "reporterCode": "reporter", "partnerCode": "partner",
-        "primaryValue": "val_mundo", "period": "ano"
-    }, inplace=True)
+    if "cmdCode" in df_comtrade.columns:
+        df_comtrade.rename(columns={"cmdCode": "sh6", "primaryValue": "val_mundo"}, inplace=True)
+    elif "CO_SH6" in df_comtrade.columns:
+        df_comtrade.rename(columns={"CO_SH6": "sh6", "VL_FOB": "val_mundo"}, inplace=True)
+    elif "CO_NCM" in df_comtrade.columns:
+        df_comtrade["sh6"] = df_comtrade["CO_NCM"].astype(str).str.zfill(8).str[:6]
+        df_comtrade.rename(columns={"VL_FOB": "val_mundo"}, inplace=True)
+        
     df_comtrade["sh6"] = df_comtrade["sh6"].astype(str).str.zfill(6).str[:6]
+    df_comtrade["val_mundo"] = pd.to_numeric(df_comtrade["val_mundo"], errors="coerce").fillna(0.0)
 
     tot_br_exp = float(df_comex["val_exp_br"].sum())
     tot_w_exp = float(df_comtrade["val_mundo"].sum())
@@ -228,45 +291,41 @@ def process_trade_data(df_comex_raw, df_comtrade_raw, df_uf_raw=None):
     return merged, df_comex
 
 # -----------------------------------------------------------------------------
-# SIDEBAR - CONTROLES, TEMPO E UPLOADS
+# SIDEBAR DE CONFIGURAÇÃO E CARGA
 # -----------------------------------------------------------------------------
 st.sidebar.title("⚙️ Configurações & Upload")
 st.sidebar.markdown("---")
 
-horizonte = st.sidebar.slider(
-    "Variação temporal de cálculo:",
-    min_value=1,
-    max_value=5,
-    value=5,
-    format="%d ano(s)"
-)
-st.sidebar.caption("Análise considerando série histórica Comexstat / Comtrade.")
+horizonte = st.sidebar.slider("Variação temporal de cálculo:", 1, 5, 5, format="%d ano(s)")
 
-st.sidebar.markdown("### 📤 Carga de Arquivos")
+st.sidebar.markdown("### 📤 Upload de Arquivos (Parquet ou CSV)")
 
 uploaded_comex = st.sidebar.file_uploader(
-    "1. Arquivo Comexstat (Nacional/Wide)",
-    type=["xlsx", "json", "parquet", "pq"],
-    help="Aceita colunas como '2020 - Valor US$ FOB' / '2020 - Valor US$ CIF', NCM, SH6, CGCE, ISIC e CUCI."
+    "1. Arquivo Comexstat (.parquet ou .csv)",
+    type=["parquet", "pq", "csv"],
+    help="Aceita os arquivos oficiais de Exportação ou Importação do Comex Stat em formato Parquet ou CSV."
 )
 
 uploaded_comex_uf = st.sidebar.file_uploader(
-    "2. Arquivo Comexstat por Estado (Opcional)",
-    type=["xlsx", "json", "parquet", "pq"],
-    help="Opcional: Permite detalhamento fino por UF exportadora/importadora."
+    "2. Arquivo por Estado (Opcional)",
+    type=["parquet", "pq", "csv"],
+    help="Opcional: Recorte estadual por UF."
 )
 
 uploaded_comtrade = st.sidebar.file_uploader(
     "3. Arquivo UN Comtrade (Mundo)",
-    type=["xlsx", "json", "parquet", "pq"],
-    help="Deve conter colunas de Reporter, Partner, HS6 (cmdCode) e primaryValue."
+    type=["parquet", "pq", "csv", "xlsx", "json"],
+    help="Estatísticas globais por código HS6."
 )
 
 st.sidebar.markdown("---")
 btn_processar = st.sidebar.button("🚀 Executar Análise e Processar Dados", type="primary", use_container_width=True)
 
+if "mestre" in AUX_TABLES and not AUX_TABLES["mestre"].empty:
+    st.sidebar.caption("✅ 8 Tabelas auxiliares ativas em `./data/tabelas_auxiliares/`")
+
 # -----------------------------------------------------------------------------
-# INICIALIZAÇÃO DE ESTADO DA SESSÃO
+# PAINEL PRINCIPAL & EXIBIÇÃO
 # -----------------------------------------------------------------------------
 if "df_processed" not in st.session_state:
     st.session_state["df_processed"] = None
@@ -275,7 +334,7 @@ if "df_processed" not in st.session_state:
 if btn_processar:
     if uploaded_comex is not None and uploaded_comtrade is not None:
         try:
-            with st.spinner("Lendo bases (Excel, JSON ou Parquet), processando VCR e categorias..."):
+            with st.spinner("Lendo arquivo Parquet/CSV e aplicando de/para relacional da SECEX..."):
                 df_cx = read_uploaded_file(uploaded_comex)
                 df_ct = read_uploaded_file(uploaded_comtrade)
                 df_uf = read_uploaded_file(uploaded_comex_uf) if uploaded_comex_uf else None
@@ -283,19 +342,16 @@ if btn_processar:
                 df_res, raw_cx = process_trade_data(df_cx, df_ct, df_uf)
                 st.session_state["df_processed"] = df_res
                 st.session_state["raw_comex"] = raw_cx
-                st.success("✅ Processamento concluído!")
+                st.success("✅ Arquivo Parquet/CSV lido e processado com sucesso!")
         except Exception as e:
-            st.error(f"Erro ao processar dados: {e}")
+            st.error(f"Erro ao processar arquivo: {e}")
             st.session_state["df_processed"] = None
     else:
-        st.warning("⚠️ Faça o upload dos arquivos obrigatórios (Comexstat e UN Comtrade) para iniciar.")
+        st.warning("⚠️ Faça o upload dos arquivos do Comexstat e UN Comtrade para avançar.")
 
 df_main = st.session_state["df_processed"]
 raw_comex = st.session_state["raw_comex"]
 
-# -----------------------------------------------------------------------------
-# INTERFACE PRINCIPAL
-# -----------------------------------------------------------------------------
 st.markdown("<div class='cni-title'>Radar das Exportações e Vantagem Comparativa (SH6 / CUCI / ISIC / CGCE)</div>", unsafe_allow_html=True)
 
 if df_main is None or df_main.empty:
@@ -305,25 +361,7 @@ if df_main is None or df_main.empty:
     col_m3.markdown("<div class='metric-value'>US$ 0,0</div><div class='metric-label'>mercado total exportado (bruto)</div>", unsafe_allow_html=True)
     
     st.markdown("<br>", unsafe_allow_html=True)
-    st.info("ℹ️ **Sistema em Espera:** Faça o upload dos documentos no painel lateral para processar os indicadores.")
-
-    tab_req = st.tabs(["📑 Requisitos Técnicos e Formatos Aceitos"])
-    with tab_req[0]:
-        st.markdown("### Formatos Suportados: Excel (`.xlsx`), JSON (`.json`) e Parquet (`.parquet` / `.pq`)")
-        c_a, c_b = st.columns(2)
-        with c_a:
-            st.markdown("#### Comexstat (Brasil & UF)")
-            st.markdown("""
-            - **Formatos:** `.xlsx`, `.json`, `.parquet`, `.pq`
-            - **Anos e Valores:** Reconhece colunas no formato `2020 - Valor US$ FOB`, `2020 - Valor US$ CIF`, etc.
-            - **Dimensões:** `País`, `NCM`, `SH6`, `CGCE 1`, `CGCE 2`, `CUCI Grupo / produtos`, `ISIC Seção`, `ISIC Divisão`, `UF`.
-            """)
-        with c_b:
-            st.markdown("#### UN Comtrade (Mundo)")
-            st.markdown("""
-            - **Formatos:** `.xlsx`, `.json`, `.parquet`, `.pq`
-            - **Campos:** `cmdCode` (SH6), `reporterCode`, `partnerCode`, `primaryValue`, `period`.
-            """)
+    st.info("ℹ️ **Formatos Suportados:** Envie seu arquivo do Comex Stat em `.parquet` ou `.csv` para rodar o cálculo de Vantagem Comparativa Revelada.")
 else:
     tot_val_bruto = float(df_main["val_exp_br"].sum())
     
@@ -341,7 +379,7 @@ else:
         "📦 Classificação por CGCE (Níveis 1 e 2)"
     ])
 
-    # TAB 1: VISÃO GERAL DE QUADRANTES
+    # TAB 1: QUADRANTES
     with tab_quadrantes:
         q_mais_escala = df_main[df_main["quadrante"] == "Mais escala, menos valor"]
         q_vantagem_nac = df_main[df_main["quadrante"] == "Vantagem Nacional (Consolidado)"]
@@ -411,10 +449,9 @@ else:
         st.markdown("<br><b>DISTRIBUIÇÃO DO MERCADO POR QUADRANTE</b>", unsafe_allow_html=True)
         st.progress(pct2_bruto / 100.0 if pct2_bruto <= 100.0 else 1.0)
 
-    # TAB 2: VISÃO ISIC (SEÇÃO E DIVISÃO)
+    # TAB 2: VISÃO ISIC
     with tab_isic:
         st.subheader("Visão Estratégica por Setor Industrial (ISIC Seção & Divisão)")
-        
         col_isic_tab, col_isic_prod = st.columns([1.4, 1.1])
         
         with col_isic_tab:
@@ -423,111 +460,61 @@ else:
                 total_val_bruto=("val_exp_br", "sum"),
                 qtd_sh6=("sh6", "count")
             ).reset_index()
-            
             df_isic_grp["Valor Exportado"] = df_isic_grp["total_val_bruto"].apply(fmt_usd)
-            st.dataframe(
-                df_isic_grp[["isic_secao", "qtd_sh6", "Valor Exportado"]],
-                column_config={"isic_secao": "ISIC Seção", "qtd_sh6": "Produtos (SH6)"},
-                hide_index=True,
-                use_container_width=True
-            )
+            st.dataframe(df_isic_grp[["isic_secao", "qtd_sh6", "Valor Exportado"]], hide_index=True, use_container_width=True)
 
         with col_isic_prod:
             st.markdown("#### Detalhamento de Produtos por Setor")
-            selected_setor = st.selectbox(
-                "Selecione uma Seção ISIC para listar os produtos:",
-                options=["-- Nenhum setor selecionado --"] + list(df_isic_grp["isic_secao"].unique())
-            )
-            
-            if selected_setor == "-- Nenhum setor selecionado --":
-                st.info("👈 Selecione uma Seção ISIC para visualizar os produtos SH6 e divisões relacionadas.")
-            else:
+            selected_setor = st.selectbox("Selecione uma Seção ISIC:", options=["-- Nenhum setor selecionado --"] + list(df_isic_grp["isic_secao"].unique()))
+            if selected_setor != "-- Nenhum setor selecionado --":
                 df_setor_prods = df_main[df_main["isic_secao"] == selected_setor].sort_values(by="val_exp_br", ascending=False)
-                st.write(f"Mostrando **{len(df_setor_prods)}** produtos para a seção **{selected_setor}**:")
-                
                 for _, r in df_setor_prods.iterrows():
                     st.markdown(f"""
                         <div style="background:#FFFFFF; border:1px solid #E2E8F0; padding:10px; border-radius:6px; margin-bottom:8px;">
                             <b style="font-size:12px; color:#0F172A;">{r['desc_sh6']} (SH6 {r['sh6']})</b><br>
-                            <span style="font-size:11px; color:#64748B;">
-                                Divisão ISIC: <b>{r['isic_divisao']}</b> | VCR: <b>{r['vcr']:.1f}</b>
-                            </span>
+                            <span style="font-size:11px; color:#64748B;">Divisão ISIC: <b>{r['isic_divisao']}</b> | VCR: <b>{r['vcr']:.1f}</b></span>
                             <div style="text-align:right; font-weight:700; color:#0F172A; font-size:13px;">{fmt_usd(r['val_exp_br'])}</div>
                         </div>
                     """, unsafe_allow_html=True)
 
-    # TAB 3: CUCI GRUPO, NCMs, PAÍSES E RANKINGS ESTADUAIS
+    # TAB 3: CUCI
     with tab_cuci:
         st.subheader("Análise por Grupo CUCI, Países de Destino e Rankings Estaduais")
-        
-        selected_cuci = st.selectbox("Selecione o Grupo CUCI para análise:", options=list(df_main["cuci_grupo"].unique()))
-        
+        selected_cuci = st.selectbox("Selecione o Grupo CUCI:", options=list(df_main["cuci_grupo"].unique()))
         if selected_cuci:
             df_cuci_filtered = df_main[df_main["cuci_grupo"] == selected_cuci]
             sh6_cuci_list = df_cuci_filtered["sh6"].unique()
-            
-            st.markdown(f"### Grupo CUCI: **{selected_cuci}**")
-            st.write(f"Total exportado pelo grupo: **{fmt_usd(df_cuci_filtered['val_exp_br'].sum())}**")
-            
             raw_cuci_ncms = raw_comex[raw_comex["sh6"].isin(sh6_cuci_list)]
-            
             col_ncms, col_paises, col_rank_exp = st.columns([1.2, 1, 1])
-            
             with col_ncms:
                 st.markdown("#### NCMs Vinculados")
                 ncms_summary = raw_cuci_ncms.groupby(["ncm", "desc_sh6"]).agg({"val_exp_br": "sum"}).reset_index()
                 ncms_summary["Exportação"] = ncms_summary["val_exp_br"].apply(fmt_usd)
-                st.dataframe(
-                    ncms_summary[["ncm", "desc_sh6", "Exportação"]],
-                    column_config={"ncm": "Código NCM", "desc_sh6": "Descrição SH6"},
-                    hide_index=True,
-                    use_container_width=True
-                )
-
+                st.dataframe(ncms_summary[["ncm", "desc_sh6", "Exportação"]], hide_index=True, use_container_width=True)
             with col_paises:
                 st.markdown("#### Top Países de Destino")
                 if "pais" in raw_cuci_ncms.columns:
-                    paises_sum = raw_cuci_ncms.groupby("pais").agg({"val_exp_br": "sum"}).reset_index()
-                    paises_sum = paises_sum.sort_values(by="val_exp_br", ascending=False).head(5)
+                    paises_sum = raw_cuci_ncms.groupby("pais").agg({"val_exp_br": "sum"}).reset_index().sort_values(by="val_exp_br", ascending=False).head(5)
                     paises_sum["Valor"] = paises_sum["val_exp_br"].apply(fmt_usd)
                     st.table(paises_sum[["pais", "Valor"]].rename(columns={"pais": "País"}))
-                else:
-                    st.caption("Coluna de país não presente na base.")
-
             with col_rank_exp:
                 st.markdown("#### Top UFs Exportadoras")
                 if "uf" in raw_cuci_ncms.columns:
-                    rank_exp = raw_cuci_ncms.groupby("uf").agg({"val_exp_br": "sum"}).reset_index()
-                    rank_exp = rank_exp.sort_values(by="val_exp_br", ascending=False).head(5)
+                    rank_exp = raw_cuci_ncms.groupby("uf").agg({"val_exp_br": "sum"}).reset_index().sort_values(by="val_exp_br", ascending=False).head(5)
                     rank_exp["Valor"] = rank_exp["val_exp_br"].apply(fmt_usd)
                     st.table(rank_exp[["uf", "Valor"]].rename(columns={"uf": "UF Origem"}))
-                else:
-                    st.caption("Upload por estado não fornecido.")
 
-    # TAB 4: VISÃO POR CATEGORIAS ECONÔMICAS (CGCE 1 E CGCE 2)
+    # TAB 4: CGCE
     with tab_cgce:
         st.subheader("Classificação por Grandes Categorias Econômicas (CGCE)")
-        
         c_cgce1, c_cgce2 = st.columns(2)
-        
         with c_cgce1:
             st.markdown("#### Distribuição por CGCE Nível 1")
             cgce1_summary = df_main.groupby("cgce_1").agg({"val_exp_br": "sum", "sh6": "count"}).reset_index()
             cgce1_summary["Valor"] = cgce1_summary["val_exp_br"].apply(fmt_usd)
-            st.dataframe(
-                cgce1_summary[["cgce_1", "sh6", "Valor"]],
-                column_config={"cgce_1": "CGCE Nível 1", "sh6": "Qtd SH6"},
-                hide_index=True,
-                use_container_width=True
-            )
-
+            st.dataframe(cgce1_summary[["cgce_1", "sh6", "Valor"]], hide_index=True, use_container_width=True)
         with c_cgce2:
             st.markdown("#### Distribuição por CGCE Nível 2")
             cgce2_summary = df_main.groupby("cgce_2").agg({"val_exp_br": "sum", "sh6": "count"}).reset_index()
             cgce2_summary["Valor"] = cgce2_summary["val_exp_br"].apply(fmt_usd)
-            st.dataframe(
-                cgce2_summary[["cgce_2", "sh6", "Valor"]],
-                column_config={"cgce_2": "CGCE Nível 2", "sh6": "Qtd SH6"},
-                hide_index=True,
-                use_container_width=True
-            )
+            st.dataframe(cgce2_summary[["cgce_2", "sh6", "Valor"]], hide_index=True, use_container_width=True)
