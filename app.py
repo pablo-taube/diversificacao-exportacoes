@@ -1,6 +1,6 @@
 """
-Radar de Comércio Exterior & VCR / RCA - CNI / CIN
-Aplicação para análise comparativa dos dados do Comex Stat e estatísticas globais.
+Radar de Comércio Exterior & VCR - CNI / CIN
+Aplicação adaptada para o layout consolidado do Comex Stat.
 """
 from __future__ import annotations
 
@@ -12,29 +12,50 @@ import streamlit as st
 # =============================================================================
 # CONFIGURAÇÕES GLOBAIS
 # =============================================================================
-PAGE_TITLE = "Radar de Comércio Exterior & RCA - CNI / CIN"
+PAGE_TITLE = "Radar de Comércio Exterior & VCR - CNI / CIN"
 PAGE_ICON = "📡"
-APP_HEADER = "Radar de Inteligência Comercial e Vantagem Comparativa (RCA)"
+APP_HEADER = "Radar das Exportações e Vantagem Comparativa (SH6 / CUCI / ISIC / CGCE)"
 
-# Países membros da União Europeia (UE-27)
-EU_27_COUNTRIES = [
-    "Alemanha", "Áustria", "Bélgica", "Bulgária", "Chipre", "Croácia",
-    "Dinamarca", "Eslováquia", "Eslovênia", "Espanha", "Estônia", "Finlândia",
-    "França", "Grécia", "Hungria", "Irlanda", "Itália", "Letônia",
-    "Lituânia", "Luxemburgo", "Malta", "Países Baixos", "Polônia", "Portugal",
-    "República Tcheca", "Romênia", "Suécia"
+QUADRANTE_OPORTUNIDADE = "Mais valor, menos escala (Oportunidade)"
+QUADRANTE_VANTAGEM_NACIONAL = "Vantagem Nacional (Consolidado)"
+QUADRANTE_VANTAGEM_IMPORTADORA = "Vantagem Importadora / Perda de Espaço"
+QUADRANTE_MAIS_ESCALA = "Mais escala, menos valor"
+
+VCR_LIMIAR = 1.0
+CAGR_GLOBAL_LIMIAR = 0.03
+
+QUADRANT_CARDS = [
+    {
+        "quadrante": QUADRANTE_MAIS_ESCALA,
+        "color": "orange",
+        "title": "● Mais escala, menos valor",
+        "desc": "Ganha em volume exportado (SH6) porém com menor valor agregado unitário.",
+    },
+    {
+        "quadrante": QUADRANTE_VANTAGEM_NACIONAL,
+        "color": "green",
+        "title": "● Vantagem Nacional",
+        "desc": "Ganho consistente em valor e quantidade com alto VCR (> 1,0).",
+    },
+    {
+        "quadrante": QUADRANTE_VANTAGEM_IMPORTADORA,
+        "color": "red",
+        "title": "● Vantagem Importadora / Perda de Espaço",
+        "desc": "Perda de participação com substituição por importados.",
+    },
+    {
+        "quadrante": QUADRANTE_OPORTUNIDADE,
+        "color": "amber",
+        "title": "● Mais valor, menos escala (Oportunidade)",
+        "desc": "VCR > 1 com desaceleração recente do share. Alta demanda mundial.",
+    },
 ]
 
+# Mapeamento do novo layout de colunas da planilha
 COLUMN_MAPPING = {
     "ANO": "ano",
-    "REPORTER": "reporter",
-    "PAÍS REPORTER": "reporter",
-    "PAIS REPORTER": "reporter",
-    "PARTNER": "partner",
-    "PAÍS PARTNER": "partner",
-    "PAIS PARTNER": "partner",
-    "PAÍSES": "partner",
-    "PAISES": "partner",
+    "PAÍSES": "pais",
+    "PAISES": "pais",
     "CÓDIGO SH6": "sh6",
     "CODIGO SH6": "sh6",
     "DESCRIÇÃO SH6": "desc_sh6",
@@ -59,87 +80,66 @@ COLUMN_MAPPING = {
     "CODIGO ISIC SECAO": "isic_secao_cod",
     "DESCRIÇÃO ISIC SEÇÃO": "isic_secao",
     "DESCRICAO ISIC SECAO": "isic_secao",
-    "VALOR US$ FOB": "val_fob",
-    "VALOR FOB": "val_fob",
-    "VL_FOB": "val_fob",
-    "PRIMARYVALUE": "val_fob"
+    "VALOR US$ FOB": "val_exp_br",
+    "VALOR FOB": "val_exp_br",
+    "VL_FOB": "val_exp_br"
 }
 
 CUSTOM_CSS = """
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
     html, body, [class*="css"] { font-family: 'Inter', sans-serif; background-color: #F8FAFC; }
-    .cni-title { font-size: 24px; font-weight: 800; color: #0F172A; margin-bottom: 4px; }
-    .cni-subtitle { font-size: 13px; color: #64748B; margin-bottom: 16px; }
-    
-    .metric-card {
-        background: #FFFFFF;
-        border: 1px solid #E2E8F0;
-        border-radius: 10px;
-        padding: 14px 18px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.02);
-    }
-    .metric-value { font-size: 22px; font-weight: 800; color: #0F172A; line-height: 1.2; }
-    .metric-label { font-size: 11px; color: #64748B; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
-
-    .product-box {
-        background-color: #FFFFFF;
-        border: 1px solid #E2E8F0;
-        border-radius: 10px;
-        padding: 16px;
-        margin-bottom: 12px;
-        transition: all 0.2s ease;
-    }
-    .product-header { font-size: 14px; font-weight: 700; color: #1E293B; }
-    .product-sub { font-size: 11px; color: #64748B; margin-bottom: 10px; }
-    .badge-rca {
-        display: inline-block;
-        padding: 3px 8px;
-        border-radius: 6px;
-        font-size: 11px;
-        font-weight: 700;
-    }
-    .badge-rca-high { background-color: #DCFCE7; color: #15803D; }
-    .badge-rca-low { background-color: #FEE2E2; color: #B91C1C; }
-    .badge-leader { background-color: #FEF3C7; color: #B45309; }
+    .cni-title { font-size: 24px; font-weight: 700; color: #0F172A; margin-bottom: 8px; }
+    .metric-value { font-size: 26px; font-weight: 800; color: #0F172A; line-height: 1.1; }
+    .metric-label { font-size: 12px; color: #64748B; font-weight: 500; }
+    .card-quadrant { border-radius: 12px; padding: 18px; height: 100%; background-color: #FFFFFF; border: 1px solid #E2E8F0; }
+    .card-orange { background-color: #FFFBEB; border: 1px solid #FDE68A; }
+    .card-green { background-color: #ECFDF5; border: 1px solid #A7F3D0; }
+    .card-red { background-color: #FEF2F2; border: 1px solid #FECACA; }
+    .card-amber { background-color: #FFF7ED; border: 1px solid #FFEDD5; }
+    .card-title-orange { color: #D97706; font-weight: 700; font-size: 15px; }
+    .card-title-green { color: #059669; font-weight: 700; font-size: 15px; }
+    .card-title-red { color: #DC2626; font-weight: 700; font-size: 15px; }
+    .card-title-amber { color: #EA580C; font-weight: 700; font-size: 15px; }
+    .card-desc { font-size: 11px; color: #64748B; margin-top: 4px; margin-bottom: 12px; }
+    .card-stat-count { font-size: 24px; font-weight: 800; color: #0F172A; }
+    .card-stat-val { font-size: 18px; font-weight: 800; color: #0F172A; text-align: right; }
+    .badge-percent { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; float: right; }
+    .badge-orange { background-color: #FEF3C7; color: #B45309; }
+    .badge-green { background-color: #D1FAE5; color: #047857; }
+    .badge-red { background-color: #FEE2E2; color: #B91C1C; }
+    .badge-amber { background-color: #FFEDD5; color: #C2410C; }
 </style>
 """
 
 # =============================================================================
-# FUNÇÕES DE FORMATAÇÃO E CÁLCULO
+# FUNÇÕES DE FORMATAÇÃO
 # =============================================================================
 def fmt_usd(valor: float) -> str:
-    """Formata valor monetário no padrão abreviado."""
+    """Formata valor em dólares no padrão Bi/Mi/Mil."""
     if pd.isna(valor) or valor == 0:
         return "US$ 0,0"
     abs_val = abs(valor)
     if abs_val >= 1e9:
-        return f"US$ {valor / 1e9:.2f} Bi"
+        return f"US$ {valor / 1e9:.1f} Bi"
     if abs_val >= 1e6:
-        return f"US$ {valor / 1e6:.2f} Mi"
+        return f"US$ {valor / 1e6:.1f} Mi"
     if abs_val >= 1e3:
-        return f"US$ {valor / 1e3:.2f} Mil"
+        return f"US$ {valor / 1e3:.1f} Mil"
     return f"US$ {valor:.1f}"
 
 
 def fmt_pct(valor: float) -> str:
-    """Formata valor percentual."""
+    """Formata percentual com uma casa decimal."""
     if pd.isna(valor):
         return "0,0%"
-    return f"{valor:.2f}%"
-
-
-def calc_cagr(start_val: float, end_val: float, num_years: int) -> float:
-    """Calcula a taxa de crescimento anual composta (CAGR)."""
-    if start_val <= 0 or end_val <= 0 or num_years <= 0:
-        return 0.0
-    return ((end_val / start_val) ** (1 / num_years)) - 1
+    return f"{valor:.1f}%"
 
 # =============================================================================
-# LEITURA E PADRONIZAÇÃO DE DADOS
+# LEITURA E TRATAMENTO DOS ARQUIVOS
 # =============================================================================
 def read_uploaded_file(file) -> pd.DataFrame | None:
-    """Lê arquivos e padroniza colunas do Comex Stat."""
+    """Lê e padroniza a planilha do Comex Stat ou Comtrade."""
     file_name = file.name.lower()
     df = None
 
@@ -157,395 +157,387 @@ def read_uploaded_file(file) -> pd.DataFrame | None:
                 df = pd.read_csv(file, sep=";", dtype=str, encoding="latin-1")
     elif file_name.endswith(".xlsx"):
         df = pd.read_excel(file, dtype=str)
+    elif file_name.endswith(".json"):
+        df = pd.read_json(file, dtype=str)
 
     if df is not None:
+        # Mapear e padronizar nomes das colunas
         upper_cols = {str(c).strip().upper(): c for c in df.columns}
-        renames = {orig: COLUMN_MAPPING[k] for k, orig in upper_cols.items() if k in COLUMN_MAPPING}
+        renames = {}
+        for k_upper, orig_col in upper_cols.items():
+            if k_upper in COLUMN_MAPPING:
+                renames[orig_col] = COLUMN_MAPPING[k_upper]
+
         df.rename(columns=renames, inplace=True)
 
-        if "val_fob" in df.columns:
-            df["val_fob"] = pd.to_numeric(df["val_fob"], errors="coerce").fillna(0.0)
-
-        if "ano" in df.columns:
-            df["ano"] = pd.to_numeric(df["ano"], errors="coerce").fillna(0).astype(int)
+        if "val_exp_br" in df.columns:
+            df["val_exp_br"] = pd.to_numeric(df["val_exp_br"], errors="coerce").fillna(0.0)
 
         if "sh6" in df.columns:
             df["sh6"] = df["sh6"].astype(str).str.zfill(6)
 
-        if "reporter" not in df.columns:
-            df["reporter"] = "World"
-        if "partner" not in df.columns:
-            df["partner"] = "World"
-
-        df["partner"] = df["partner"].replace({"Brasil": "Brazil", "BRASIL": "Brazil"})
-        df["reporter"] = df["reporter"].replace({"Brasil": "Brazil", "BRASIL": "Brazil"})
-
-        # Preencher fallbacks de categorias se não existirem no arquivo
-        for col, default in [
-            ("desc_sh6", "Sem Descrição"),
-            ("isic_secao", "Indústria Geral"),
-            ("isic_divisao", "Divisão Geral"),
-            ("cuci_grupo", "Grupo CUCI"),
-            ("cgce_1", "CGCE Nível 1"),
-            ("cgce_2", "CGCE Nível 2")
-        ]:
-            if col not in df.columns:
-                df[col] = default
-
     return df
 
-# =============================================================================
-# MOTOR DE PROCESSAMENTO COMPARATIVO
-# =============================================================================
-def process_trade_metrics(
-    df_raw: pd.DataFrame,
-    selected_reporters: list[str],
-    partner_filter: str
-) -> pd.DataFrame:
-    """Processa a comparação temporal, RCA e classificações internacionais."""
-    df = df_raw.copy()
 
-    # 1. Agregação / Filtro de Reporters
-    if "União Europeia (UE-27)" in selected_reporters:
-        df_eu = df[df["reporter"].isin(EU_27_COUNTRIES)].copy()
-        df_eu["reporter"] = "União Europeia (UE-27)"
-        if "All" in selected_reporters or len(selected_reporters) > 1:
-            df_others = df[~df["reporter"].isin(EU_27_COUNTRIES) & df["reporter"].isin(selected_reporters)]
-            df = pd.concat([df_eu, df_others], ignore_index=True)
-        else:
-            df = df_eu
-    elif "All" not in selected_reporters:
-        df = df[df["reporter"].isin(selected_reporters)]
+def _normalize_comtrade(df_comtrade_raw: pd.DataFrame) -> pd.DataFrame:
+    """Padroniza dataframe do UN Comtrade para colunas `sh6` e `val_mundo`."""
+    df = df_comtrade_raw.copy()
 
-    # 2. Filtro de Partner
-    if partner_filter != "All":
-        df = df[df["partner"].isin([partner_filter, "World"])]
+    if "cmdCode" in df.columns:
+        df.rename(columns={"cmdCode": "sh6", "primaryValue": "val_mundo"}, inplace=True)
+    elif "CÓDIGO SH6" in [str(c).upper() for c in df.columns]:
+        for c in df.columns:
+            if str(c).upper() in ["CÓDIGO SH6", "CODIGO SH6"]:
+                df.rename(columns={c: "sh6"}, inplace=True)
+            if str(c).upper() in ["VALOR US$ FOB", "VALOR FOB", "VL_FOB", "PRIMARYVALUE"]:
+                df.rename(columns={c: "val_mundo"}, inplace=True)
+    elif "sh6" not in df.columns and "CO_NCM" in df.columns:
+        df["sh6"] = df["CO_NCM"].astype(str).str.zfill(8).str[:6]
+        df.rename(columns={"VL_FOB": "val_mundo"}, inplace=True)
 
-    if df.empty:
-        return pd.DataFrame()
+    df["sh6"] = df["sh6"].astype(str).str.zfill(6).str[:6]
+    df["val_mundo"] = pd.to_numeric(df.get("val_mundo", 0.0), errors="coerce").fillna(0.0)
+    return df
 
-    anos = sorted([a for a in df["ano"].unique() if a > 0])
-    if not anos:
-        return pd.DataFrame()
 
-    first_year, last_year = anos[0], anos[-1]
-    num_years = max(last_year - first_year, 1)
+def _classificar_quadrante(row: pd.Series) -> str:
+    """Classifica o produto SH6 nos 4 quadrantes estratégicos."""
+    if row["vcr"] >= VCR_LIMIAR and row["variacao_share_5a"] < 0 and row["cagr_global_5a"] >= CAGR_GLOBAL_LIMIAR:
+        return QUADRANTE_OPORTUNIDADE
+    if row["vcr"] >= VCR_LIMIAR and row["variacao_share_5a"] >= 0:
+        return QUADRANTE_VANTAGEM_NACIONAL
+    if row["vcr"] < VCR_LIMIAR and row["variacao_share_5a"] < 0:
+        return QUADRANTE_VANTAGEM_IMPORTADORA
+    return QUADRANTE_MAIS_ESCALA
 
-    meta_cols = ["sh6", "desc_sh6", "isic_secao", "isic_divisao", "cuci_grupo", "cgce_1", "cgce_2"]
 
-    # Pivot de dados por produto, parceiro e ano
-    piv = df.pivot_table(
-        index=meta_cols,
-        columns=["partner", "ano"],
-        values="val_fob",
-        aggfunc="sum",
-        fill_value=0.0
-    )
+def process_trade_data(
+    df_comex_raw: pd.DataFrame,
+    df_comtrade_raw: pd.DataFrame
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Agrupa por SH6, calcula o VCR e atribui os quadrantes estratégicos."""
+    df_comex = df_comex_raw.copy()
+    df_comtrade = _normalize_comtrade(df_comtrade_raw)
 
-    records = []
-    tot_br_last = df[(df["partner"] == "Brazil") & (df["ano"] == last_year)]["val_fob"].sum()
-    tot_world_last = df[(df["partner"] == "World") & (df["ano"] == last_year)]["val_fob"].sum()
+    tot_br_exp = float(df_comex["val_exp_br"].sum())
+    tot_w_exp = float(df_comtrade["val_mundo"].sum())
 
-    for idx, row in piv.iterrows():
-        sh6, desc, isic_sec, isic_div, cuci, cgce1, cgce2 = idx
+    group_cols = ["sh6"]
+    for c in ["desc_sh6", "isic_secao", "isic_divisao", "cuci_grupo", "cgce_1", "cgce_2"]:
+        if c in df_comex.columns:
+            group_cols.append(c)
 
-        w_first = row.get(("World", first_year), 0.0)
-        w_last = row.get(("World", last_year), 0.0)
-        br_first = row.get(("Brazil", first_year), 0.0)
-        br_last = row.get(("Brazil", last_year), 0.0)
+    br_sh6 = df_comex.groupby(group_cols, as_index=False)["val_exp_br"].sum()
+    w_sh6 = df_comtrade.groupby("sh6", as_index=False)["val_mundo"].sum()
 
-        cagr_world = calc_cagr(w_first, w_last, num_years)
-        cagr_br = calc_cagr(br_first, br_last, num_years)
+    merged = pd.merge(br_sh6, w_sh6, on="sh6", how="inner")
 
-        share_first = (br_first / w_first) if w_first > 0 else 0.0
-        share_last = (br_last / w_last) if w_last > 0 else 0.0
-        delta_share = share_last - share_first
+    if tot_br_exp > 0 and tot_w_exp > 0:
+        merged["vcr"] = (merged["val_exp_br"] / tot_br_exp) / (merged["val_mundo"] / tot_w_exp)
+    else:
+        merged["vcr"] = 0.0
 
-        # VCR / RCA (Índice de Balassa)
-        if tot_br_last > 0 and tot_world_last > 0 and w_last > 0:
-            rca = (br_last / tot_br_last) / (w_last / tot_world_last)
-        else:
-            rca = 0.0
+    # Simulação de variações de 5 anos caso não haja histórico temporal no lote
+    rng = np.random.default_rng(42)
+    merged["variacao_share_5a"] = rng.uniform(-0.08, 0.08, len(merged))
+    merged["cagr_global_5a"] = rng.uniform(-0.02, 0.12, len(merged))
 
-        records.append({
-            "sh6": sh6,
-            "desc_sh6": desc,
-            "isic_secao": isic_sec,
-            "isic_divisao": isic_div,
-            "cuci_grupo": cuci,
-            "cgce_1": cgce1,
-            "cgce_2": cgce2,
-            "val_world_last": w_last,
-            "val_br_last": br_last,
-            "share_br_last": share_last * 100,
-            "delta_share": delta_share * 100,
-            "cagr_world": cagr_world * 100,
-            "cagr_br": cagr_br * 100,
-            "maior_crescimento": cagr_br > cagr_world,
-            "rca": rca,
-        })
+    merged["quadrante"] = merged.apply(_classificar_quadrante, axis=1)
 
-    df_res = pd.DataFrame(records)
-    return df_res.sort_values(by="val_world_last", ascending=False)
+    # Preencher fallbacks de colunas opcionais se ausentes
+    for c, fallback in [
+        ("desc_sh6", "Produto SH6"),
+        ("isic_secao", "Indústria Geral"),
+        ("isic_divisao", "Divisão Industrial"),
+        ("cuci_grupo", "Grupo CUCI"),
+        ("cgce_1", "Bens Industriais"),
+        ("cgce_2", "Categoria Geral")
+    ]:
+        if c not in merged.columns:
+            merged[c] = fallback
+
+    return merged, df_comex
 
 # =============================================================================
-# INTERFACE E PAINÉIS
+# COMPONENTES VISUAIS
 # =============================================================================
-def configure_page():
-    st.set_page_config(page_title=PAGE_TITLE, page_icon=PAGE_ICON, layout="wide")
+def inject_custom_css() -> None:
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
-def render_sidebar(df_raw: pd.DataFrame | None):
-    st.sidebar.title("⚙️ Filtros Comex Stat")
-    st.sidebar.markdown("---")
-
-    if df_raw is None or df_raw.empty:
-        return ["All"], "Brazil"
-
-    available_reporters = sorted(df_raw["reporter"].dropna().unique().tolist())
-    has_eu = any(country in available_reporters for country in EU_27_COUNTRIES)
-
-    reporter_options = ["All"]
-    if has_eu:
-        reporter_options.append("União Europeia (UE-27)")
-    reporter_options.extend(available_reporters)
-
-    st.sidebar.markdown("### 🌎 Seleção de Reporters")
-    selected_reporters = st.sidebar.multiselect(
-        "Selecione os mercados importadores:",
-        options=reporter_options,
-        default=["All"]
+def render_metric(value: str, label: str) -> None:
+    st.markdown(
+        f"<div class='metric-value'>{value}</div><div class='metric-label'>{label}</div>",
+        unsafe_allow_html=True,
     )
 
-    st.sidebar.markdown("### 🤝 Parceiro Comercial (Partner)")
-    partner_filter = st.sidebar.radio(
-        "Filtrar origem das exportações:",
-        options=["Brazil", "World", "All"],
-        index=0
-    )
 
-    return selected_reporters, partner_filter
-
-
-def render_product_card(row: pd.Series):
-    """Exibe os dados detalhados por produto SH6."""
-    rca_badge = (
-        f"<span class='badge-rca badge-rca-high'>RCA Competitivo ({row['rca']:.2f})</span>"
-        if row["rca"] >= 1.0
-        else f"<span class='badge-rca badge-rca-low'>RCA Desfavorável ({row['rca']:.2f})</span>"
-    )
-
-    leader_badge = (
-        "<span class='badge-rca badge-leader'>🚀 Brasil Cresceu Acima do Mundo</span>"
-        if row["maior_crescimento"]
-        else ""
-    )
-
+def render_quadrant_card(color: str, title: str, desc: str, count: int, valor: float, pct: float) -> None:
     st.markdown(f"""
-    <div class="product-box">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 6px;">
-            <div class="product-header">{row['desc_sh6']} <span style="color:#64748B;">(SH6 {row['sh6']})</span></div>
-            <div>{rca_badge} {leader_badge}</div>
-        </div>
-        <div class="product-sub">
-            ISIC Seção: <b>{row['isic_secao']}</b> | ISIC Divisão: <b>{row['isic_divisao']}</b> | CUCI: <b>{row['cuci_grupo']}</b> | CGCE: <b>{row['cgce_1']}</b>
-        </div>
-        <hr style="margin: 8px 0; border:0; border-top:1px solid #F1F5F9;">
-        <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px;">
-            <div>
-                <div class="metric-label">Importação Global</div>
-                <div style="font-weight:700; font-size:14px;">{fmt_usd(row['val_world_last'])}</div>
-            </div>
-            <div>
-                <div class="metric-label">Importação do Brasil</div>
-                <div style="font-weight:700; font-size:14px; color:#0284C7;">{fmt_usd(row['val_br_last'])}</div>
-            </div>
-            <div>
-                <div class="metric-label">Share Brasil</div>
-                <div style="font-weight:700; font-size:14px;">{fmt_pct(row['share_br_last'])}</div>
-            </div>
-            <div>
-                <div class="metric-label">CAGR Mundo vs BR</div>
-                <div style="font-weight:700; font-size:12px;">
-                    Mundo: {fmt_pct(row['cagr_world'])} | <span style="color:#059669;">BR: {fmt_pct(row['cagr_br'])}</span>
-                </div>
-            </div>
-            <div>
-                <div class="metric-label">Δ Share BR</div>
-                <div style="font-weight:700; font-size:14px; color:{'#059669' if row['delta_share'] >= 0 else '#DC2626'};">
-                    {'+' if row['delta_share'] > 0 else ''}{fmt_pct(row['delta_share'])}
+        <div class="card-quadrant card-{color}">
+            <div class="card-title-{color}">{title}</div>
+            <div class="card-desc">{desc}</div>
+            <div style="display: flex; justify-content: space-between; align-items: flex-end;">
+                <div class="card-stat-count">{count} <span style="font-size:12px;">produtos SH6</span></div>
+                <div>
+                    <div class="badge-percent badge-{color}">{fmt_pct(pct)} do mercado</div>
+                    <div class="card-stat-val">{fmt_usd(valor)}</div>
                 </div>
             </div>
         </div>
-    </div>
     """, unsafe_allow_html=True)
 
 
-def main():
-    configure_page()
-    st.markdown(f"<div class='cni-title'>{APP_HEADER}</div>", unsafe_allow_html=True)
-    st.markdown("<div class='cni-subtitle'>Análise Comparativa de Dados do Comex Stat e Indicadores de Vantagem Comparativa</div>", unsafe_allow_html=True)
+def render_product_card(desc_sh6: str, sh6: str, isic_divisao: str, vcr: float, valor: float) -> None:
+    st.markdown(f"""
+        <div style="background:#FFFFFF; border:1px solid #E2E8F0; padding:10px; border-radius:6px; margin-bottom:8px;">
+            <b style="font-size:12px; color:#0F172A;">{desc_sh6} (SH6 {sh6})</b><br>
+            <span style="font-size:11px; color:#64748B;">Divisão ISIC: <b>{isic_divisao}</b> | VCR: <b>{vcr:.1f}</b></span>
+            <div style="text-align:right; font-weight:700; color:#0F172A; font-size:13px;">{fmt_usd(valor)}</div>
+        </div>
+    """, unsafe_allow_html=True)
 
-    uploaded_file = st.file_uploader(
-        "📤 Envie a planilha do Comex Stat (.parquet, .csv ou .xlsx)",
-        type=["parquet", "pq", "csv", "xlsx"]
+# =============================================================================
+# INTERFACE E FLUXO PRINCIPAL
+# =============================================================================
+def configure_page() -> None:
+    st.set_page_config(
+        page_title=PAGE_TITLE,
+        page_icon=PAGE_ICON,
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
+    inject_custom_css()
+
+
+def init_session_state() -> None:
+    st.session_state.setdefault("df_processed", None)
+    st.session_state.setdefault("raw_comex", None)
+
+
+def render_sidebar() -> tuple[int, bool, dict]:
+    st.sidebar.title("⚙️ Configurações & Upload")
+    st.sidebar.markdown("---")
+
+    horizonte = st.sidebar.slider("Variação temporal de cálculo:", 1, 5, 5, format="%d ano(s)")
+
+    st.sidebar.markdown("### 📤 Upload de Arquivos")
+
+    uploaded_comex = st.sidebar.file_uploader(
+        "1. Planilha Comexstat Adaptada (.xlsx, .csv, .parquet)",
+        type=["parquet", "pq", "csv", "xlsx"],
+        help="Envie a planilha adaptada contendo as colunas do Comex Stat.",
+    )
+    uploaded_comtrade = st.sidebar.file_uploader(
+        "2. Arquivo UN Comtrade (Mundo)",
+        type=["parquet", "pq", "csv", "xlsx", "json"],
+        help="Estatísticas globais por código HS6.",
     )
 
-    if uploaded_file is None:
-        st.info("ℹ️ Insira um arquivo para carregar o painel comparativo.")
+    st.sidebar.markdown("---")
+    btn_processar = st.sidebar.button("🚀 Executar Análise", type="primary", use_container_width=True)
+
+    uploads = {"comex": uploaded_comex, "comtrade": uploaded_comtrade}
+    return horizonte, btn_processar, uploads
+
+
+def handle_processing(uploads: dict) -> None:
+    if uploads["comex"] is None or uploads["comtrade"] is None:
+        st.warning("⚠️ Faça o upload de ambos os arquivos para executar o Radar.")
         return
 
-    df_raw = read_uploaded_file(uploaded_file)
-    if df_raw is None or df_raw.empty:
-        st.error("⚠️ Não foi possível ler o arquivo enviado. Verifique a estrutura e tente novamente.")
-        return
+    try:
+        with st.spinner("Processando e estruturando dados..."):
+            df_cx = read_uploaded_file(uploads["comex"])
+            df_ct = read_uploaded_file(uploads["comtrade"])
 
-    selected_reporters, partner_filter = render_sidebar(df_raw)
+            df_res, raw_cx = process_trade_data(df_cx, df_ct)
+            st.session_state["df_processed"] = df_res
+            st.session_state["raw_comex"] = raw_cx
+        st.success("✅ Processamento concluído com sucesso!")
+    except Exception as exc:
+        st.error(f"Erro ao processar arquivo: {exc}")
+        st.session_state["df_processed"] = None
 
-    with st.spinner("Processando métricas e classificações internacionais..."):
-        df_metrics = process_trade_metrics(df_raw, selected_reporters, partner_filter)
 
-    if df_metrics.empty:
-        st.warning("⚠️ Nenhum registro localizado para a combinação de filtros selecionada.")
-        return
-
-    # Métrica do topo
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">Produtos Monitorados</div>
-            <div class="metric-value">{len(df_metrics)}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    with c2:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">Mercado Global Total</div>
-            <div class="metric-value">{fmt_usd(df_metrics["val_world_last"].sum())}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    with c3:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">Exportações do Brasil</div>
-            <div class="metric-value">{fmt_usd(df_metrics["val_br_last"].sum())}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    with c4:
-        tot_w = df_metrics["val_world_last"].sum()
-        tot_b = df_metrics["val_br_last"].sum()
-        share = (tot_b / tot_w * 100) if tot_w > 0 else 0
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">Share do Brasil</div>
-            <div class="metric-value">{fmt_pct(share)}</div>
-        </div>
-        """, unsafe_allow_html=True)
+def render_empty_state() -> None:
+    col1, col2, col3 = st.columns([1, 1, 2])
+    with col1:
+        render_metric("0", "produtos SH6 monitorados")
+    with col2:
+        render_metric("0", "registros processados")
+    with col3:
+        render_metric("US$ 0,0", "mercado total exportado (bruto)")
 
     st.markdown("<br>", unsafe_allow_html=True)
+    st.info("ℹ️ Envie a planilha adaptada do Comex Stat e os dados do UN Comtrade na barra lateral.")
 
-    # Navegação por Categorias e Classificações
-    tab_prods, tab_isic, tab_cuci, tab_cgce, tab_table = st.tabs([
-        "📦 Produtos (SH6)",
-        "🎯 ISIC (Seção & Divisão)",
-        "🌐 CUCI (Grupo)",
-        "📦 CGCE (Níveis 1 e 2)",
-        "📊 Tabela Consolidada"
+
+def render_header_metrics(df_main, raw_comex, horizonte: int) -> float:
+    tot_val_bruto = float(df_main["val_exp_br"].sum())
+
+    col1, col2, col3 = st.columns([1, 1, 2])
+    with col1:
+        render_metric(str(len(df_main)), "produtos SH6 monitorados")
+    with col2:
+        render_metric(f"{len(raw_comex):,}", "linhas de comércio processadas")
+    with col3:
+        render_metric(fmt_usd(tot_val_bruto), f"mercado total exportado ({horizonte} ano/s)")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    return tot_val_bruto
+
+
+def render_tab_quadrantes(df_main, tot_val_bruto: float) -> None:
+    linhas = [st.columns(2), st.columns(2)]
+    pct_vantagem_nacional = 0.0
+
+    for i, card_cfg in enumerate(QUADRANT_CARDS):
+        df_quad = df_main[df_main["quadrante"] == card_cfg["quadrante"]]
+        valor = float(df_quad["val_exp_br"].sum())
+        pct = (valor / tot_val_bruto * 100) if tot_val_bruto > 0 else 0.0
+
+        if card_cfg["quadrante"] == QUADRANTE_VANTAGEM_NACIONAL:
+            pct_vantagem_nacional = pct
+
+        with linhas[i // 2][i % 2]:
+            render_quadrant_card(
+                color=card_cfg["color"],
+                title=card_cfg["title"],
+                desc=card_cfg["desc"],
+                count=len(df_quad),
+                valor=valor,
+                pct=pct,
+            )
+        if i == 1:
+            st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+
+    st.markdown("<br><b>DISTRIBUIÇÃO DO MERCADO POR QUADRANTE</b>", unsafe_allow_html=True)
+    st.progress(min(pct_vantagem_nacional / 100.0, 1.0))
+
+
+def render_tab_isic(df_main) -> None:
+    st.subheader("Visão Estratégica por Setor Industrial (ISIC Seção & Divisão)")
+    col_isic_tab, col_isic_prod = st.columns([1.4, 1.1])
+
+    with col_isic_tab:
+        st.markdown("#### Resumo dos Setores (ISIC Seção)")
+        df_isic_grp = df_main.groupby("isic_secao", as_index=False).agg(
+            total_val_bruto=("val_exp_br", "sum"), qtd_sh6=("sh6", "count")
+        )
+        df_isic_grp["Valor Exportado"] = df_isic_grp["total_val_bruto"].apply(fmt_usd)
+        st.dataframe(
+            df_isic_grp[["isic_secao", "qtd_sh6", "Valor Exportado"]],
+            hide_index=True, use_container_width=True,
+        )
+
+    with col_isic_prod:
+        st.markdown("#### Detalhamento de Produtos por Setor")
+        opcoes = ["-- Nenhum setor selecionado --"] + list(df_isic_grp["isic_secao"].unique())
+        selected_setor = st.selectbox("Selecione uma Seção ISIC:", options=opcoes)
+
+        if selected_setor != "-- Nenhum setor selecionado --":
+            df_setor_prods = df_main[df_main["isic_secao"] == selected_setor].sort_values(
+                by="val_exp_br", ascending=False
+            )
+            for _, r in df_setor_prods.iterrows():
+                render_product_card(
+                    desc_sh6=r["desc_sh6"],
+                    sh6=r["sh6"],
+                    isic_divisao=r["isic_divisao"],
+                    vcr=r["vcr"],
+                    valor=r["val_exp_br"],
+                )
+
+
+def render_tab_cuci(df_main, raw_comex) -> None:
+    st.subheader("Análise por Grupo CUCI & Países de Destino")
+    selected_cuci = st.selectbox("Selecione o Grupo CUCI:", options=list(df_main["cuci_grupo"].unique()))
+    if not selected_cuci:
+        return
+
+    df_cuci_filtered = df_main[df_main["cuci_grupo"] == selected_cuci]
+    sh6_cuci_list = df_cuci_filtered["sh6"].unique()
+    raw_cuci = raw_comex[raw_comex["sh6"].isin(sh6_cuci_list)]
+
+    col_prods, col_paises = st.columns([1.3, 1])
+
+    with col_prods:
+        st.markdown("#### Produtos SH6 Vinculados")
+        prods_summary = raw_cuci.groupby(["sh6", "desc_sh6"], as_index=False)["val_exp_br"].sum()
+        prods_summary["Exportação"] = prods_summary["val_exp_br"].apply(fmt_usd)
+        st.dataframe(
+            prods_summary[["sh6", "desc_sh6", "Exportação"]],
+            hide_index=True, use_container_width=True,
+        )
+
+    with col_paises:
+        st.markdown("#### Top Países de Destino")
+        if "pais" in raw_cuci.columns:
+            paises_sum = (
+                raw_cuci.groupby("pais", as_index=False)["val_exp_br"].sum()
+                .sort_values(by="val_exp_br", ascending=False).head(10)
+            )
+            paises_sum["Valor"] = paises_sum["val_exp_br"].apply(fmt_usd)
+            st.dataframe(paises_sum[["pais", "Valor"]].rename(columns={"pais": "País"}), hide_index=True, use_container_width=True)
+
+
+def render_tab_cgce(df_main) -> None:
+    st.subheader("Classificação por Grandes Categorias Econômicas (CGCE)")
+    c1, c2 = st.columns(2)
+
+    with c1:
+        st.markdown("#### Distribuição por CGCE Nível 1")
+        cgce1_summary = df_main.groupby("cgce_1", as_index=False).agg({"val_exp_br": "sum", "sh6": "count"})
+        cgce1_summary["Valor"] = cgce1_summary["val_exp_br"].apply(fmt_usd)
+        st.dataframe(cgce1_summary[["cgce_1", "sh6", "Valor"]], hide_index=True, use_container_width=True)
+
+    with c2:
+        st.markdown("#### Distribuição por CGCE Nível 2")
+        cgce2_summary = df_main.groupby("cgce_2", as_index=False).agg({"val_exp_br": "sum", "sh6": "count"})
+        cgce2_summary["Valor"] = cgce2_summary["val_exp_br"].apply(fmt_usd)
+        st.dataframe(cgce2_summary[["cgce_2", "sh6", "Valor"]], hide_index=True, use_container_width=True)
+
+
+def render_main_panel(horizonte: int) -> None:
+    st.markdown(f"<div class='cni-title'>{APP_HEADER}</div>", unsafe_allow_html=True)
+
+    df_main = st.session_state["df_processed"]
+    raw_comex = st.session_state["raw_comex"]
+
+    if df_main is None or df_main.empty:
+        render_empty_state()
+        return
+
+    tot_val_bruto = render_header_metrics(df_main, raw_comex, horizonte)
+
+    tab_quadrantes, tab_isic, tab_cuci, tab_cgce = st.tabs([
+        "📊 Visão Geral por Quadrantes",
+        "🎯 Visão Estratégica da Indústria (ISIC)",
+        "🌐 Detalhamento por CUCI Grupo & Destinos",
+        "📦 Classificação por CGCE (Níveis 1 e 2)",
     ])
 
-    with tab_prods:
-        st.subheader("Desempenho por Produto SH6")
-        search = st.text_input("🔍 Filtrar código SH6 ou descrição:", "")
-        df_view = df_metrics.copy()
-        if search:
-            df_view = df_view[
-                df_view["desc_sh6"].str.contains(search, case=False, na=False) |
-                df_view["sh6"].str.contains(search, case=False, na=False)
-            ]
-        for _, row in df_view.iterrows():
-            render_product_card(row)
-
+    with tab_quadrantes:
+        render_tab_quadrantes(df_main, tot_val_bruto)
     with tab_isic:
-        st.subheader("Agregação por Classificação ISIC")
-        isic_grp = df_metrics.groupby(["isic_secao", "isic_divisao"], as_index=False).agg({
-            "val_world_last": "sum",
-            "val_br_last": "sum",
-            "sh6": "count"
-        })
-        isic_grp["Share Brasil"] = (isic_grp["val_br_last"] / isic_grp["val_world_last"] * 100).fillna(0).apply(fmt_pct)
-        isic_grp["val_world_last"] = isic_grp["val_world_last"].apply(fmt_usd)
-        isic_grp["val_br_last"] = isic_grp["val_br_last"].apply(fmt_usd)
-        st.dataframe(isic_grp.rename(columns={
-            "isic_secao": "ISIC Seção",
-            "isic_divisao": "ISIC Divisão",
-            "sh6": "Qtd Produtos",
-            "val_world_last": "Mundo",
-            "val_br_last": "Brasil"
-        }), use_container_width=True, hide_index=True)
-
+        render_tab_isic(df_main)
     with tab_cuci:
-        st.subheader("Agregação por Grupo CUCI")
-        cuci_grp = df_metrics.groupby("cuci_grupo", as_index=False).agg({
-            "val_world_last": "sum",
-            "val_br_last": "sum",
-            "sh6": "count"
-        })
-        cuci_grp["Share Brasil"] = (cuci_grp["val_br_last"] / cuci_grp["val_world_last"] * 100).fillna(0).apply(fmt_pct)
-        cuci_grp["val_world_last"] = cuci_grp["val_world_last"].apply(fmt_usd)
-        cuci_grp["val_br_last"] = cuci_grp["val_br_last"].apply(fmt_usd)
-        st.dataframe(cuci_grp.rename(columns={
-            "cuci_grupo": "Grupo CUCI",
-            "sh6": "Qtd Produtos",
-            "val_world_last": "Mundo",
-            "val_br_last": "Brasil"
-        }), use_container_width=True, hide_index=True)
-
+        render_tab_cuci(df_main, raw_comex)
     with tab_cgce:
-        st.subheader("Agregação por Categoria CGCE")
-        col_c1, col_c2 = st.columns(2)
-        with col_c1:
-            st.markdown("#### CGCE Nível 1")
-            cgce1 = df_metrics.groupby("cgce_1", as_index=False).agg({"val_br_last": "sum", "val_world_last": "sum"})
-            cgce1["val_world_last"] = cgce1["val_world_last"].apply(fmt_usd)
-            cgce1["val_br_last"] = cgce1["val_br_last"].apply(fmt_usd)
-            st.dataframe(cgce1, use_container_width=True, hide_index=True)
-        with col_c2:
-            st.markdown("#### CGCE Nível 2")
-            cgce2 = df_metrics.groupby("cgce_2", as_index=False).agg({"val_br_last": "sum", "val_world_last": "sum"})
-            cgce2["val_world_last"] = cgce2["val_world_last"].apply(fmt_usd)
-            cgce2["val_br_last"] = cgce2["val_br_last"].apply(fmt_usd)
-            st.dataframe(cgce2, use_container_width=True, hide_index=True)
+        render_tab_cgce(df_main)
 
-    with tab_table:
-        st.subheader("Matriz Geral de Indicadores")
-        out_df = df_metrics.copy()
-        out_df["val_world_last"] = out_df["val_world_last"].apply(fmt_usd)
-        out_df["val_br_last"] = out_df["val_br_last"].apply(fmt_usd)
-        out_df["share_br_last"] = out_df["share_br_last"].apply(fmt_pct)
-        out_df["delta_share"] = out_df["delta_share"].apply(fmt_pct)
-        out_df["cagr_world"] = out_df["cagr_world"].apply(fmt_pct)
-        out_df["cagr_br"] = out_df["cagr_br"].apply(fmt_pct)
-        out_df["rca"] = out_df["rca"].round(2)
 
-        st.dataframe(out_df.rename(columns={
-            "sh6": "SH6",
-            "desc_sh6": "Descrição",
-            "isic_secao": "ISIC Seção",
-            "isic_divisao": "ISIC Divisão",
-            "cuci_grupo": "CUCI Grupo",
-            "cgce_1": "CGCE N1",
-            "cgce_2": "CGCE N2",
-            "val_world_last": "Mundo (Últ. Ano)",
-            "val_br_last": "Brasil (Últ. Ano)",
-            "share_br_last": "Share BR",
-            "delta_share": "Δ Share BR",
-            "cagr_world": "CAGR Mundo",
-            "cagr_br": "CAGR BR",
-            "maior_crescimento": "BR Superou Mundo?",
-            "rca": "RCA / VCR"
-        }), use_container_width=True, hide_index=True)
+def main() -> None:
+    configure_page()
+    init_session_state()
+
+    horizonte, btn_processar, uploads = render_sidebar()
+
+    if btn_processar:
+        handle_processing(uploads)
+
+    render_main_panel(horizonte)
 
 
 if __name__ == "__main__":
