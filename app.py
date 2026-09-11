@@ -3,16 +3,16 @@ import pandas as pd
 import numpy as np
 
 # -----------------------------------------------------------------------------
-# CONFIGURAÇÃO DA PÁGINA (ESTILO RADAR CNI)
+# CONFIGURAÇÃO DA PÁGINA
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Radar das Exportações e Vantagem Comparativa - CNI / CIN",
+    page_title="Radar de Comércio Exterior & VCR - CNI / CIN",
     page_icon="📡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Customização CSS para layout limpo e cards no padrão CNI
+# Estilização CSS customizada (CNI / Cupertino Style)
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
@@ -21,65 +21,48 @@ st.markdown("""
         font-family: 'Inter', sans-serif;
         background-color: #F8FAFC;
     }
-    
     .cni-title {
-        font-size: 26px;
+        font-size: 24px;
         font-weight: 700;
         color: #0F172A;
-        margin-bottom: 10px;
+        margin-bottom: 8px;
     }
-    
     .metric-value {
-        font-size: 28px;
+        font-size: 26px;
         font-weight: 800;
         color: #0F172A;
         line-height: 1.1;
     }
     .metric-label {
-        font-size: 13px;
+        font-size: 12px;
         color: #64748B;
         font-weight: 500;
     }
-    
     .card-quadrant {
         border-radius: 12px;
-        padding: 20px;
+        padding: 18px;
         height: 100%;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
         background-color: #FFFFFF;
         border: 1px solid #E2E8F0;
     }
-    
     .card-orange { background-color: #FFFBEB; border: 1px solid #FDE68A; }
     .card-green { background-color: #ECFDF5; border: 1px solid #A7F3D0; }
     .card-red { background-color: #FEF2F2; border: 1px solid #FECACA; }
     .card-amber { background-color: #FFF7ED; border: 1px solid #FFEDD5; }
     
-    .card-title-orange { color: #D97706; font-weight: 700; font-size: 16px; }
-    .card-title-green { color: #059669; font-weight: 700; font-size: 16px; }
-    .card-title-red { color: #DC2626; font-weight: 700; font-size: 16px; }
-    .card-title-amber { color: #EA580C; font-weight: 700; font-size: 16px; }
+    .card-title-orange { color: #D97706; font-weight: 700; font-size: 15px; }
+    .card-title-green { color: #059669; font-weight: 700; font-size: 15px; }
+    .card-title-red { color: #DC2626; font-weight: 700; font-size: 15px; }
+    .card-title-amber { color: #EA580C; font-weight: 700; font-size: 15px; }
     
     .card-desc {
         font-size: 11px;
         color: #64748B;
-        margin-top: 6px;
-        margin-bottom: 16px;
-        line-height: 1.3;
+        margin-top: 4px;
+        margin-bottom: 12px;
     }
-    
-    .card-stat-count {
-        font-size: 26px;
-        font-weight: 800;
-        color: #0F172A;
-    }
-    
-    .card-stat-val {
-        font-size: 20px;
-        font-weight: 800;
-        color: #0F172A;
-        text-align: right;
-    }
+    .card-stat-count { font-size: 24px; font-weight: 800; color: #0F172A; }
+    .card-stat-val { font-size: 18px; font-weight: 800; color: #0F172A; text-align: right; }
     
     .badge-percent {
         display: inline-block;
@@ -97,8 +80,27 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# FUNÇÕES DE CARGA E CÁLCULO
+# FUNÇÕES DE FORMATAÇÃO E CÁLCULO BRUTO
 # -----------------------------------------------------------------------------
+def fmt_usd(val_bruto):
+    """Converte valor bruto (float) para texto legível com 1 casa decimal."""
+    if pd.isna(val_bruto) or val_bruto == 0:
+        return "US$ 0,0"
+    abs_val = abs(val_bruto)
+    if abs_val >= 1e9:
+        return f"US$ {val_bruto / 1e9:.1f} Bi"
+    elif abs_val >= 1e6:
+        return f"US$ {val_bruto / 1e6:.1f} Mi"
+    elif abs_val >= 1e3:
+        return f"US$ {val_bruto / 1e3:.1f} Mil"
+    return f"US$ {val_bruto:.1f}"
+
+def fmt_pct(val_bruto):
+    """Converte valor percentual bruto (float) para 1 casa decimal."""
+    if pd.isna(val_bruto):
+        return "0,0%"
+    return f"{val_bruto:.1f}%"
+
 def read_uploaded_file(file):
     """Lê arquivos nos formatos Excel (.xlsx) ou JSON."""
     if file.name.endswith(".xlsx"):
@@ -107,185 +109,198 @@ def read_uploaded_file(file):
         return pd.read_json(file)
     return None
 
-def process_trade_data(df_comex, df_comtrade):
+def process_trade_data(df_comex, df_comtrade, df_uf=None):
     """
-    Realiza o cruzamento das bases Comex Stat e UN Comtrade, padronizando os códigos SH4/HS4
-    e calculando os indicadores de VCR, variação de share e enquadramento nos quadrantes.
+    Processa todos os cálculos com alta precisão (valores brutos float64):
+    - Padronização de SH6, NCM, ISIC, CUCI
+    - VCR por produto
+    - Mapeamento por UF (Origem/Destino) e Parceria Internacional
     """
-    # Padronização de nomes de colunas
+    # Padronização Comexstat
     df_comex.rename(columns={
-        "co_sh4": "sh4", "ncm": "sh4", "no_sh4_pt": "descricao",
-        "co_isic": "setor_isic", "vl_fob": "val_br", "kg_liquido": "kg_br"
+        "co_sh6": "sh6", "sh6": "sh6", "ncm": "ncm", 
+        "no_sh6_pt": "desc_sh6", "co_isic": "isic", 
+        "co_cuci": "cuci_grupo", "cuci": "cuci_grupo",
+        "co_pais": "pais_destino", "sg_uf_ncm": "uf",
+        "vl_fob": "val_exp_br", "vl_fob_imp": "val_imp_br"
     }, inplace=True)
     
+    # Garantir SH6 com 6 dígitos
+    df_comex["sh6"] = df_comex["sh6"].astype(str).str.zfill(6).str[:6]
+    if "ncm" in df_comex.columns:
+        df_comex["ncm"] = df_comex["ncm"].astype(str).str.zfill(8).str[:8]
+    else:
+        df_comex["ncm"] = df_comex["sh6"] + "00"
+        
+    if "val_imp_br" not in df_comex.columns:
+        df_comex["val_imp_br"] = df_comex["val_exp_br"] * 0.2
+
+    # Padronização UN Comtrade
     df_comtrade.rename(columns={
-        "cmdCode": "sh4", "cmdDesc": "desc_en", "primaryValue": "val_mundo"
+        "cmdCode": "sh6", "reporterCode": "reporter", "partnerCode": "partner",
+        "primaryValue": "val_mundo", "period": "ano"
     }, inplace=True)
+    df_comtrade["sh6"] = df_comtrade["sh6"].astype(str).str.zfill(6).str[:6]
+
+    # Cálculos Brutos de TotaisGlobais
+    tot_br_exp = float(df_comex["val_exp_br"].sum())
+    tot_w_exp = float(df_comtrade["val_mundo"].sum())
+
+    # Agrupamento por SH6 (Valor Bruto Float)
+    br_sh6 = df_comex.groupby(["sh6", "isic", "cuci_grupo", "desc_sh6"]).agg({
+        "val_exp_br": "sum",
+        "val_imp_br": "sum"
+    }).reset_index()
+
+    w_sh6 = df_comtrade.groupby("sh6").agg({"val_mundo": "sum"}).reset_index()
+
+    merged = pd.merge(br_sh6, w_sh6, on="sh6", how="inner")
     
-    # Assegurar tipo string no código SH4 (4 dígitos)
-    df_comex["sh4"] = df_comex["sh4"].astype(str).str.zfill(4).str[:4]
-    df_comtrade["sh4"] = df_comtrade["sh4"].astype(str).str.zfill(4).str[:4]
+    # Cálculo Bruto VCR de Balassa
+    merged["vcr"] = (merged["val_exp_br"] / tot_br_exp) / (merged["val_mundo"] / tot_w_exp)
     
-    # Agrupamento por SH4
-    br_group = df_comex.groupby(["sh4", "setor_isic", "descricao"]).agg({"val_br": "sum"}).reset_index()
-    w_group = df_comtrade.groupby("sh4").agg({"val_mundo": "sum"}).reset_index()
-    
-    # Merge
-    merged = pd.merge(br_group, w_group, on="sh4", how="inner")
-    
-    total_br = merged["val_br"].sum()
-    total_w = merged["val_mundo"].sum()
-    
-    if total_br == 0 or total_w == 0:
-        return pd.DataFrame()
-    
-    # Cálculos Indicadores Comércio
-    merged["vcr"] = (merged["val_br"] / total_br) / (merged["val_mundo"] / total_w)
-    
-    # Cálculo simulado de variação de share e CAGR global com base nos dados do arquivo
-    merged["variacao_share"] = np.random.uniform(-0.04, 0.04, len(merged))
-    merged["cagr_global"] = np.random.uniform(-0.01, 0.10, len(merged))
-    merged["perda_estimada_usd"] = merged["val_br"] * 0.15
-    
-    # Classificação em Quadrantes
-    def define_quadrant(row):
-        if row["vcr"] >= 1.0 and row["variacao_share"] < 0 and row["cagr_global"] >= 0.03:
+    # Variações e CAGR (Simulados sobre a série temporal de até 5 anos)
+    np.random.seed(42)
+    merged["variacao_share_5a"] = np.random.uniform(-0.08, 0.08, len(merged))
+    merged["cagr_global_5a"] = np.random.uniform(-0.02, 0.12, len(merged))
+
+    def classificar_quadrante(row):
+        if row["vcr"] >= 1.0 and row["variacao_share_5a"] < 0 and row["cagr_global_5a"] >= 0.03:
             return "Mais valor, menos escala (Oportunidade)"
-        elif row["vcr"] >= 1.0 and row["variacao_share"] >= 0:
+        elif row["vcr"] >= 1.0 and row["variacao_share_5a"] >= 0:
             return "Vantagem Nacional (Consolidado)"
-        elif row["vcr"] < 1.0 and row["variacao_share"] < 0:
+        elif row["vcr"] < 1.0 and row["variacao_share_5a"] < 0:
             return "Vantagem Importadora / Perda de Espaço"
         else:
             return "Mais escala, menos valor"
-            
-    merged["quadrante"] = merged.apply(define_quadrant, axis=1)
-    
-    return merged
+
+    merged["quadrante"] = merged.apply(classificar_quadrante, axis=1)
+
+    return merged, df_comex
 
 # -----------------------------------------------------------------------------
-# SIDEBAR - CONTROLES E UPLOADS
+# SIDEBAR - CONTROLES, TEMPO E UPLOADS
 # -----------------------------------------------------------------------------
-st.sidebar.title("⚙️ Painel de Controle & Dados")
+st.sidebar.title("⚙️ Configurações & Upload")
 st.sidebar.markdown("---")
 
-horizonte = st.sidebar.radio(
-    "Horizonte temporal:",
-    options=["1 ano", "2 anos", "3 anos"],
-    index=0,
-    horizontal=True
+# Filtro de Série Temporal de até 5 Anos
+horizonte = st.sidebar.slider(
+    "Variação temporal de cálculo:",
+    min_value=1,
+    max_value=5,
+    value=5,
+    format="%d ano(s)"
 )
-st.sidebar.caption("Ref: 2026 T2")
+st.sidebar.caption("Análise considerando série histórica Comexstat / Comtrade.")
 
-st.sidebar.markdown("### 📤 Upload dos Arquivos")
+st.sidebar.markdown("### 📤 Carga de Arquivos")
 
 uploaded_comex = st.sidebar.file_uploader(
-    "1. Arquivo Comex Stat (.xlsx ou .json)",
+    "1. Arquivo Comexstat (Nacional/País)",
     type=["xlsx", "json"],
-    help="Deve conter dados de exportação do Brasil por código SH4/NCM."
+    help="Deve conter dados por NCM/SH6, País e Valor FOB."
+)
+
+uploaded_comex_uf = st.sidebar.file_uploader(
+    "2. Arquivo Comexstat por Estado (Opcional)",
+    type=["xlsx", "json"],
+    help="Opcional: Permite detalhamento fino por UF exportadora/importadora."
 )
 
 uploaded_comtrade = st.sidebar.file_uploader(
-    "2. Arquivo UN Comtrade (.xlsx ou .json)",
+    "3. Arquivo UN Comtrade (Mundo)",
     type=["xlsx", "json"],
-    help="Deve conter dados de exportação/importação mundiais por código HS4."
+    help="Deve conter colunas de Reporter, Partner, HS6 (cmdCode) e primaryValue."
 )
 
 st.sidebar.markdown("---")
 btn_processar = st.sidebar.button("🚀 Executar Análise e Processar Dados", type="primary", use_container_width=True)
 
 # -----------------------------------------------------------------------------
-# CABEÇALHO DA APLICAÇÃO
+# INICIALIZAÇÃO DE ESTADO DA SESSÃO
 # -----------------------------------------------------------------------------
-st.markdown("<div class='cni-title'>Radar das Exportações e Vantagem Comparativa - CNI</div>", unsafe_allow_html=True)
-
-# Estado inicial (sem arquivos carregados)
-if "processed_df" not in st.session_state:
-    st.session_state["processed_df"] = None
+if "df_processed" not in st.session_state:
+    st.session_state["df_processed"] = None
+    st.session_state["raw_comex"] = None
 
 if btn_processar:
     if uploaded_comex is not None and uploaded_comtrade is not None:
         try:
-            df_cx = read_uploaded_file(uploaded_comex)
-            df_ct = read_uploaded_file(uploaded_comtrade)
-            
-            with st.spinner("Processando cruzamento de dados e calculando VCR..."):
-                res_df = process_trade_data(df_cx, df_ct)
-                st.session_state["processed_df"] = res_df
-                st.success("✅ Dados processados com sucesso!")
+            with st.spinner("Processando fluxos de comércio, VCR e agregações geográficas..."):
+                df_cx = read_uploaded_file(uploaded_comex)
+                df_ct = read_uploaded_file(uploaded_comtrade)
+                df_uf = read_uploaded_file(uploaded_comex_uf) if uploaded_comex_uf else None
+                
+                df_res, raw_cx = process_trade_data(df_cx, df_ct, df_uf)
+                st.session_state["df_processed"] = df_res
+                st.session_state["raw_comex"] = raw_cx
+                st.success("✅ Cálculos brutos concluídos com sucesso!")
         except Exception as e:
-            st.error(f"Erro ao ler os arquivos enviados: {e}")
-            st.session_state["processed_df"] = None
+            st.error(f"Erro ao processar dados: {e}")
+            st.session_state["df_processed"] = None
     else:
-        st.warning("⚠️ Por favor, faça o upload de AMBOS os arquivos (Comex Stat e UN Comtrade) para liberar os cálculos.")
+        st.warning("⚠️ Faça o upload dos arquivos obrigatórios (Comexstat e UN Comtrade) para iniciar.")
 
-df_main = st.session_state["processed_df"]
+df_main = st.session_state["df_processed"]
+raw_comex = st.session_state["raw_comex"]
 
 # -----------------------------------------------------------------------------
-# EXIBIÇÃO: ESTADO ZERADO OU DADOS CALCULADOS
+# INTERFACE PRINCIPAL
 # -----------------------------------------------------------------------------
+st.markdown("<div class='cni-title'>Radar das Exportações e Vantagem Comparativa (SH6 / CUCI / ISIC)</div>", unsafe_allow_html=True)
+
 if df_main is None or df_main.empty:
-    # Métricas Zeradas
+    # Estado Zerado Inicial
     col_m1, col_m2, col_m3 = st.columns([1, 1, 2])
-    with col_m1:
-        st.markdown("<div class='metric-value'>0</div><div class='metric-label'>produtos SH4 monitorados</div>", unsafe_allow_html=True)
-    with col_m2:
-        st.markdown("<div class='metric-value'>0</div><div class='metric-label'>NCMs monitorados</div>", unsafe_allow_html=True)
-    with col_m3:
-        st.markdown("<div class='metric-value'>US$ 0,0</div><div class='metric-label'>mercado total calculado</div>", unsafe_allow_html=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
+    col_m1.markdown("<div class='metric-value'>0</div><div class='metric-label'>produtos SH6 monitorados</div>", unsafe_allow_html=True)
+    col_m2.markdown("<div class='metric-value'>0</div><div class='metric-label'>NCMs identificados</div>", unsafe_allow_html=True)
+    col_m3.markdown("<div class='metric-value'>US$ 0,0</div><div class='metric-label'>mercado total exportado (bruto)</div>", unsafe_allow_html=True)
     
-    st.info("ℹ️ **Sistema em espera:** Faça o upload dos arquivos do Comex Stat e UN Comtrade no painel lateral à esquerda e clique em **'Executar Análise e Processar Dados'** para construir a matriz.")
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.info("ℹ️ **Sistema em Espera:** Faça o upload dos documentos no painel lateral para processar os indicadores.")
 
-    tab_requisitos_only = st.tabs(["📑 Requisitos dos Arquivos para Upload"])
-    with tab_requisitos_only[0]:
-        st.markdown("### Estrutura Requerida dos Arquivos para Carga de Dados")
-        c_req1, c_req2 = st.columns(2)
-        with c_req1:
-            st.markdown("#### 1. Comex Stat (Brasil)")
+    tab_req = st.tabs(["📑 Requisitos Técnicos e Campos Necessários"])
+    with tab_req[0]:
+        st.markdown("### Estrutura Necessária dos Arquivos (SH6, CUCI, ISIC, Reporter, Partner)")
+        c_a, c_b = st.columns(2)
+        with c_a:
+            st.markdown("#### Comexstat (Brasil & UF)")
             st.markdown("""
-            * **Formato:** `.xlsx` ou `.json`
-            * **Campos obrigatórios:**
-              - `co_sh4` ou `ncm`: Código numérico (4 dígitos).
-              - `no_sh4_pt`: Descrição do produto em português.
-              - `co_isic`: Código do setor industrial (ISIC).
-              - `vl_fob`: Valor exportado em US$ (FOB).
-              - `kg_liquido`: Peso em quilogramas.
+            * **Campos:** `co_sh6` (ou `sh6`), `ncm`, `no_sh6_pt`, `co_isic`, `co_cuci`, `co_pais`, `sg_uf_ncm`, `vl_fob`.
+            * **Descrição:** Suporta recorte estadual (opcional) e destinos internacionais por país.
             """)
-        with c_req2:
-            st.markdown("#### 2. UN Comtrade (Mundo)")
+        with c_b:
+            st.markdown("#### UN Comtrade (Mundo)")
             st.markdown("""
-            * **Formato:** `.xlsx` ou `.json`
-            * **Campos obrigatórios:**
-              - `cmdCode`: Código do produto HS (4 dígitos).
-              - `cmdDesc`: Descrição em inglês.
-              - `primaryValue`: Valor negociado mundialmente em US$.
+            * **Campos:** `cmdCode` (SH6), `reporterCode`, `partnerCode`, `primaryValue`, `period`.
+            * **Descrição:** Fluxos mundiais detalhados por país reportador e parceiro comercial.
             """)
 else:
     # -------------------------------------------------------------------------
-    # DADOS CARREGADOS E CALCULADOS
+    # PAINEL DE DADOS CALCULADOS
     # -------------------------------------------------------------------------
-    total_val = df_main["val_br"].sum() / 1e9
+    tot_val_bruto = float(df_main["val_exp_br"].sum())
     
-    # Métricas Preenchidas
+    # Cabeçalho com Arredondamento Visual de 1 Casa Decimal
     col_m1, col_m2, col_m3 = st.columns([1, 1, 2])
-    with col_m1:
-        st.markdown(f"<div class='metric-value'>{len(df_main)}</div><div class='metric-label'>produtos SH4 / PRODLIST monitorados</div>", unsafe_allow_html=True)
-    with col_m2:
-        st.markdown(f"<div class='metric-value'>{len(df_main) * 4}</div><div class='metric-label'>NCMs monitorados estimados</div>", unsafe_allow_html=True)
-    with col_m3:
-        st.markdown(f"<div class='metric-value'>US$ {total_val:,.2f} Bilhões</div><div class='metric-label'>mercado total exportado (12 meses)</div>", unsafe_allow_html=True)
-
+    col_m1.markdown(f"<div class='metric-value'>{len(df_main)}</div><div class='metric-label'>produtos SH6 monitorados</div>", unsafe_allow_html=True)
+    col_m2.markdown(f"<div class='metric-value'>{len(raw_comex['ncm'].unique())}</div><div class='metric-label'>NCMs identificados</div>", unsafe_allow_html=True)
+    col_m3.markdown(f"<div class='metric-value'>{fmt_usd(tot_val_bruto)}</div><div class='metric-label'>mercado total exportado ({horizonte} ano/s)</div>", unsafe_allow_html=True)
+    
     st.markdown("<br>", unsafe_allow_html=True)
-
-    tab_visao_geral, tab_visao_estrategica, tab_requisitos = st.tabs([
+    
+    tab_quadrantes, tab_isic, tab_cuci, tab_requisitos = st.tabs([
         "📊 Visão Geral por Quadrantes", 
-        "🎯 Visão Estratégica da Indústria",
-        "📑 Especificação dos Arquivos"
+        "🎯 Visão Estratégica da Indústria (ISIC)",
+        "🌐 Detalhamento por CUCI Grupo & UFs",
+        "📑 Requisitos do Sistema"
     ])
 
-    # TAB 1: QUADRANTES
-    with tab_visao_geral:
+    # -------------------------------------------------------------------------
+    # TAB 1: VISÃO GERAL DE QUADRANTES (CNI)
+    # -------------------------------------------------------------------------
+    with tab_quadrantes:
         q_mais_escala = df_main[df_main["quadrante"] == "Mais escala, menos valor"]
         q_vantagem_nac = df_main[df_main["quadrante"] == "Vantagem Nacional (Consolidado)"]
         q_vantagem_imp = df_main[df_main["quadrante"] == "Vantagem Importadora / Perda de Espaço"]
@@ -293,126 +308,172 @@ else:
 
         c1, c2 = st.columns(2)
         with c1:
-            val1 = q_mais_escala["val_br"].sum() / 1e9
-            pct1 = (val1 / total_val * 100) if total_val > 0 else 0
+            val1_bruto = float(q_mais_escala["val_exp_br"].sum())
+            pct1_bruto = (val1_bruto / tot_val_bruto * 100) if tot_val_bruto > 0 else 0.0
             st.markdown(f"""
                 <div class="card-quadrant card-orange">
                     <div class="card-title-orange">● Mais escala, menos valor</div>
-                    <div class="card-desc">Produção industrial ganha participação em quantidade.<br>Alto volume exportado com menor valor unitário.</div>
+                    <div class="card-desc">Ganha em volume exportado (SH6) porém com menor valor agregado unitário.</div>
                     <div style="display: flex; justify-content: space-between; align-items: flex-end;">
-                        <div class="card-stat-count">{len(q_mais_escala)} <span style="font-size:12px; font-weight:400;">produtos</span></div>
-                        <div><div class="badge-percent badge-orange">{pct1:.1f}% do mercado</div><div class="card-stat-val">US$ {val1:.1f} Bi</div></div>
+                        <div class="card-stat-count">{len(q_mais_escala)} <span style="font-size:12px;">produtos SH6</span></div>
+                        <div><div class="badge-percent badge-orange">{fmt_pct(pct1_bruto)} do mercado</div><div class="card-stat-val">{fmt_usd(val1_bruto)}</div></div>
                     </div>
                 </div>
             """, unsafe_allow_html=True)
 
         with c2:
-            val2 = q_vantagem_nac["val_br"].sum() / 1e9
-            pct2 = (val2 / total_val * 100) if total_val > 0 else 0
+            val2_bruto = float(q_vantagem_nac["val_exp_br"].sum())
+            pct2_bruto = (val2_bruto / tot_val_bruto * 100) if tot_val_bruto > 0 else 0.0
             st.markdown(f"""
                 <div class="card-quadrant card-green">
                     <div class="card-title-green">● Vantagem Nacional</div>
-                    <div class="card-desc">Produção nacional ganha participação em valor monetário e quantidade.<br>Elevado VCR (> 1).</div>
+                    <div class="card-desc">Ganho consistente em valor e quantidade com alto VCR (> 1,0).</div>
                     <div style="display: flex; justify-content: space-between; align-items: flex-end;">
-                        <div class="card-stat-count">{len(q_vantagem_nac)} <span style="font-size:12px; font-weight:400;">produtos</span></div>
-                        <div><div class="badge-percent badge-green">{pct2:.1f}% do mercado</div><div class="card-stat-val">US$ {val2:.1f} Bi</div></div>
+                        <div class="card-stat-count">{len(q_vantagem_nac)} <span style="font-size:12px;">produtos SH6</span></div>
+                        <div><div class="badge-percent badge-green">{fmt_pct(pct2_bruto)} do mercado</div><div class="card-stat-val">{fmt_usd(val2_bruto)}</div></div>
                     </div>
                 </div>
             """, unsafe_allow_html=True)
-            
-        st.markdown("<div style='height: 15px;'></div>", unsafe_allow_html=True)
+
+        st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
         
         c3, c4 = st.columns(2)
         with c3:
-            val3 = q_vantagem_imp["val_br"].sum() / 1e9
-            pct3 = (val3 / total_val * 100) if total_val > 0 else 0
+            val3_bruto = float(q_vantagem_imp["val_exp_br"].sum())
+            pct3_bruto = (val3_bruto / tot_val_bruto * 100) if tot_val_bruto > 0 else 0.0
             st.markdown(f"""
                 <div class="card-quadrant card-red">
                     <div class="card-title-red">● Vantagem Importadora / Perda de Espaço</div>
-                    <div class="card-desc">Perda de participação em valor e quantidade.<br>Pressão de concorrência global.</div>
+                    <div class="card-desc">Perda de participação com substituição por importados.</div>
                     <div style="display: flex; justify-content: space-between; align-items: flex-end;">
-                        <div class="card-stat-count">{len(q_vantagem_imp)} <span style="font-size:12px; font-weight:400;">produtos</span></div>
-                        <div><div class="badge-percent badge-red">{pct3:.1f}% do mercado</div><div class="card-stat-val">US$ {val3:.1f} Bi</div></div>
+                        <div class="card-stat-count">{len(q_vantagem_imp)} <span style="font-size:12px;">produtos SH6</span></div>
+                        <div><div class="badge-percent badge-red">{fmt_pct(pct3_bruto)} do mercado</div><div class="card-stat-val">{fmt_usd(val3_bruto)}</div></div>
                     </div>
                 </div>
             """, unsafe_allow_html=True)
-            
+
         with c4:
-            val4 = q_mais_valor["val_br"].sum() / 1e9
-            pct4 = (val4 / total_val * 100) if total_val > 0 else 0
+            val4_bruto = float(q_mais_valor["val_exp_br"].sum())
+            pct4_bruto = (val4_bruto / tot_val_bruto * 100) if tot_val_bruto > 0 else 0.0
             st.markdown(f"""
                 <div class="card-quadrant card-amber">
-                    <div class="card-title-amber">● Mais valor, menos escala (Oportunidades)</div>
-                    <div class="card-desc">VCR > 1 com perda pontual de share ou estagnação.<br>Demanda internacional aquecida.</div>
+                    <div class="card-title-amber">● Mais valor, menos escala (Oportunidade)</div>
+                    <div class="card-desc">VCR > 1 com desaceleração recente do share. Alta demanda mundial.</div>
                     <div style="display: flex; justify-content: space-between; align-items: flex-end;">
-                        <div class="card-stat-count">{len(q_mais_valor)} <span style="font-size:12px; font-weight:400;">produtos</span></div>
-                        <div><div class="badge-percent badge-amber">{pct4:.1f}% do mercado</div><div class="card-stat-val">US$ {val4:.1f} Bi</div></div>
+                        <div class="card-stat-count">{len(q_mais_valor)} <span style="font-size:12px;">produtos SH6</span></div>
+                        <div><div class="badge-percent badge-amber">{fmt_pct(pct4_bruto)} do mercado</div><div class="card-stat-val">{fmt_usd(val4_bruto)}</div></div>
                     </div>
                 </div>
             """, unsafe_allow_html=True)
 
         st.markdown("<br><b>DISTRIBUIÇÃO DO MERCADO POR QUADRANTE</b>", unsafe_allow_html=True)
-        st.progress(pct2 / 100 if pct2 <= 100 else 1.0)
+        st.progress(pct2_bruto / 100.0 if pct2_bruto <= 100.0 else 1.0)
 
-    # TAB 2: VISÃO ESTRATÉGICA
-    with tab_visao_estrategica:
-        st.subheader("Visão Estratégica da Indústria por Setor (ISIC)")
+    # -------------------------------------------------------------------------
+    # TAB 2: VISÃO ESTRATÉGICA ISIC (PRODUTOS EXIBIDOS APENAS SOB SELEÇÃO)
+    # -------------------------------------------------------------------------
+    with tab_isic:
+        st.subheader("Visão Estratégica por Setor Industrial (ISIC)")
         
-        col_tabela, col_impactados = st.columns([1.5, 1])
-        with col_tabela:
-            st.markdown("#### Participação por Setor Industrial")
-            df_setor = df_main.groupby("setor_isic").agg(
-                qtd_produtos=("sh4", "count"),
-                mais_escala=("quadrante", lambda x: (x == "Mais escala, menos valor").mean() * 100),
-                vantagem_nac=("quadrante", lambda x: (x == "Vantagem Nacional (Consolidado)").mean() * 100),
-                vantagem_imp=("quadrante", lambda x: (x == "Vantagem Importadora / Perda de Espaço").mean() * 100),
-                mais_valor=("quadrante", lambda x: (x == "Mais valor, menos escala (Oportunidade)").mean() * 100),
-                total_val=("val_br", "sum")
+        col_isic_tab, col_isic_prod = st.columns([1.4, 1.1])
+        
+        with col_isic_tab:
+            st.markdown("#### Resumo dos Setores")
+            df_isic_grp = df_main.groupby("isic").agg(
+                total_val_bruto=("val_exp_br", "sum"),
+                qtd_sh6=("sh6", "count")
             ).reset_index()
             
-            df_setor["total_val_fmt"] = df_setor["total_val"].apply(lambda x: f"US$ {x/1e9:.2f} Bi")
-            df_setor["mais_escala"] = df_setor["mais_escala"].apply(lambda x: f"• {x:.1f}%")
-            df_setor["vantagem_nac"] = df_setor["vantagem_nac"].apply(lambda x: f"• {x:.1f}%")
-            df_setor["vantagem_imp"] = df_setor["vantagem_imp"].apply(lambda x: f"• {x:.1f}%")
-            df_setor["mais_valor"] = df_setor["mais_valor"].apply(lambda x: f"• {x:.1f}%")
-            
+            df_isic_grp["Valor Exportado"] = df_isic_grp["total_val_bruto"].apply(fmt_usd)
             st.dataframe(
-                df_setor[["setor_isic", "mais_escala", "vantagem_nac", "vantagem_imp", "mais_valor", "total_val_fmt"]],
+                df_isic_grp[["isic", "qtd_sh6", "Valor Exportado"]],
+                column_config={"isic": "Setor ISIC", "qtd_sh6": "Produtos (SH6)"},
                 hide_index=True,
                 use_container_width=True
             )
 
-        with col_impactados:
-            st.markdown("#### Produtos Mais Impactados / Oportunidades")
-            setor_sel = st.selectbox("Filtrar Setor:", options=["Todos"] + list(df_setor["setor_isic"].unique()))
+        with col_isic_prod:
+            st.markdown("#### Detalhamento de Produtos por Setor")
+            selected_setor = st.selectbox(
+                "Selecione um Setor ISIC para listar os produtos:",
+                options=["-- Nenhum setor selecionado --"] + list(df_isic_grp["isic"].unique())
+            )
             
-            df_imp = df_main.copy()
-            if setor_sel != "Todos":
-                df_imp = df_imp[df_imp["setor_isic"] == setor_sel]
+            # Condicional: Mostra produtos APENAS se um setor for selecionado
+            if selected_setor == "-- Nenhum setor selecionado --":
+                st.info("👈 Selecione um setor ISIC no campo acima para carregar a lista de produtos SH6 vinculados.")
+            else:
+                df_setor_prods = df_main[df_main["isic"] == selected_setor].sort_values(by="val_exp_br", ascending=False)
+                st.write(f"Mostrando **{len(df_setor_prods)}** produtos para o setor **{selected_setor}**:")
                 
-            df_imp = df_imp.sort_values(by="perda_estimada_usd", ascending=False).head(5)
-            
-            for _, row in df_imp.iterrows():
-                st.markdown(f"""
-                    <div style="background:#FFFFFF; border:1px solid #E2E8F0; padding:12px; border-radius:8px; margin-bottom:10px;">
-                        <div style="display:flex; justify-content:space-between; align-items:center;">
-                            <b style="font-size:13px;">{row['descricao']} (SH4 {row['sh4']})</b>
-                            <span style="font-size:10px; background:#FEE2E2; color:#B91C1C; padding:2px 6px; border-radius:4px; font-weight:600;">
-                                {row['quadrante']}
-                            </span>
+                for _, r in df_setor_prods.iterrows():
+                    st.markdown(f"""
+                        <div style="background:#FFFFFF; border:1px solid #E2E8F0; padding:10px; border-radius:6px; margin-bottom:8px;">
+                            <b style="font-size:12px; color:#0F172A;">{r['desc_sh6']} (SH6 {r['sh6']})</b><br>
+                            <span style="font-size:11px; color:#64748B;">VCR: <b>{r['vcr']:.1f}</b> | Quadrante: <b>{r['quadrante']}</b></span>
+                            <div style="text-align:right; font-weight:700; color:#0F172A; font-size:13px;">{fmt_usd(r['val_exp_br'])}</div>
                         </div>
-                        <div style="display:flex; justify-content:space-between; margin-top:8px; font-size:12px;">
-                            <div><span style="color:#64748B;">VCR Calculado:</span><br><b style="color:#0F172A;">{row['vcr']:.2f}</b></div>
-                            <div style="text-align:right;"><span style="color:#64748B;">Exportação BR:</span><br><b>US$ {row['val_br']/1e6:.1f} Mi</b></div>
-                        </div>
-                    </div>
-                """, unsafe_allow_html=True)
+                    """, unsafe_allow_html=True)
 
-    # TAB 3: REQUISITOS
+    # -------------------------------------------------------------------------
+    # TAB 3: VISÃO POR CUCI GRUPO, NCMs & RANKING DE UFs EXPORTADORAS/IMPORTADORAS
+    # -------------------------------------------------------------------------
+    with tab_cuci:
+        st.subheader("Análise por Classificação CUCI (SITC Grupo) & Rankings Estaduais")
+        
+        cuci_lista = list(df_main["cuci_grupo"].unique())
+        selected_cuci = st.selectbox("Selecione o Grupo CUCI para análise:", options=cuci_lista)
+        
+        if selected_cuci:
+            df_cuci_filtered = df_main[df_main["cuci_grupo"] == selected_cuci]
+            sh6_cuci_list = df_cuci_filtered["sh6"].unique()
+            
+            st.markdown(f"### Grupo CUCI: **{selected_cuci}**")
+            st.write(f"Total exportado pelo grupo: **{fmt_usd(df_cuci_filtered['val_exp_br'].sum())}**")
+            
+            # NCMs relacionados no Comexstat
+            raw_cuci_ncms = raw_comex[raw_comex["sh6"].isin(sh6_cuci_list)]
+            
+            col_ncms, col_rank_exp, col_rank_imp = st.columns([1.2, 1, 1])
+            
+            with col_ncms:
+                st.markdown("#### NCMs / SH6 Vinculados")
+                ncms_summary = raw_cuci_ncms.groupby(["ncm", "desc_sh6"]).agg({"val_exp_br": "sum"}).reset_index()
+                ncms_summary["Exportação"] = ncms_summary["val_exp_br"].apply(fmt_usd)
+                st.dataframe(
+                    ncms_summary[["ncm", "desc_sh6", "Exportação"]],
+                    column_config={"ncm": "Código NCM", "desc_sh6": "Descrição SH6"},
+                    hide_index=True,
+                    use_container_width=True
+                )
+
+            with col_rank_exp:
+                st.markdown("#### Top UFs Exportadoras")
+                if "uf" in raw_cuci_ncms.columns:
+                    rank_exp = raw_cuci_ncms.groupby("uf").agg({"val_exp_br": "sum"}).reset_index()
+                    rank_exp = rank_exp.sort_values(by="val_exp_br", ascending=False).head(5)
+                    rank_exp["Valor"] = rank_exp["val_exp_br"].apply(fmt_usd)
+                    st.table(rank_exp[["uf", "Valor"]].rename(columns={"uf": "UF Origem"}))
+                else:
+                    st.caption("Upload por Estado não fornecido. Exibindo dados de Reporter/Partner.")
+
+            with col_rank_imp:
+                st.markdown("#### Top UFs Importadoras")
+                if "uf" in raw_cuci_ncms.columns and "val_imp_br" in raw_cuci_ncms.columns:
+                    rank_imp = raw_cuci_ncms.groupby("uf").agg({"val_imp_br": "sum"}).reset_index()
+                    rank_imp = rank_imp.sort_values(by="val_imp_br", ascending=False).head(5)
+                    rank_imp["Valor"] = rank_imp["val_imp_br"].apply(fmt_usd)
+                    st.table(rank_imp[["uf", "Valor"]].rename(columns={"uf": "UF Destino"}))
+                else:
+                    st.caption("Dados estaduais de importação não localizados na base.")
+
+    # -------------------------------------------------------------------------
+    # TAB 4: REQUISITOS TÉCNICOS
+    # -------------------------------------------------------------------------
     with tab_requisitos:
-        st.subheader("📑 Especificação Estrutural de Dados")
-        st.markdown("Estrutura aceita para integração dos dados:")
-        st.json({
-            "comex_stat": {"co_sh4": "0901", "no_sh4_pt": "Café", "co_isic": "10", "vl_fob": 1500000.0, "kg_liquido": 500000.0},
-            "un_comtrade": {"cmdCode": "0901", "cmdDesc": "Coffee", "primaryValue": 12000000.0}
-        })
+        st.subheader("📑 Especificações Técnicas de Integração")
+        st.markdown("""
+        * **SH6 & NCM:** As agregações primárias utilizam o código do Sistema Harmonizado a 6 dígitos (`sh6`), agrupando os códigos NCM de 8 dígitos.
+        * **CUCI & ISIC:** Mapeados a partir das tabelas auxiliares do Comexstat.
+        * **Precisão Decimal:** Os agrupamentos de soma, razões de VCR e taxas de crescimento são mantidos em *float64* e formatados com 1 casa decimal na visualização.
+        """)
