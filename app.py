@@ -102,11 +102,14 @@ def fmt_pct(val_bruto):
     return f"{val_bruto:.1f}%"
 
 def read_uploaded_file(file):
-    """Lê arquivos nos formatos Excel (.xlsx) ou JSON."""
-    if file.name.endswith(".xlsx"):
+    """Lê arquivos nos formatos Excel (.xlsx), JSON (.json) e Parquet (.parquet / .pq)."""
+    file_name = file.name.lower()
+    if file_name.endswith(".xlsx"):
         return pd.read_excel(file)
-    elif file.name.endswith(".json"):
+    elif file_name.endswith(".json"):
         return pd.read_json(file)
+    elif file_name.endswith(".parquet") or file_name.endswith(".pq"):
+        return pd.read_parquet(file)
     return None
 
 def process_comexstat_wide(df_comex):
@@ -242,20 +245,20 @@ st.sidebar.caption("Análise considerando série histórica Comexstat / Comtrade
 st.sidebar.markdown("### 📤 Carga de Arquivos")
 
 uploaded_comex = st.sidebar.file_uploader(
-    "1. Arquivo Comexstat (Nacional/Wide/Colunas de Ano)",
-    type=["xlsx", "json"],
+    "1. Arquivo Comexstat (Nacional/Wide)",
+    type=["xlsx", "json", "parquet", "pq"],
     help="Aceita colunas como '2020 - Valor US$ FOB' / '2020 - Valor US$ CIF', NCM, SH6, CGCE, ISIC e CUCI."
 )
 
 uploaded_comex_uf = st.sidebar.file_uploader(
     "2. Arquivo Comexstat por Estado (Opcional)",
-    type=["xlsx", "json"],
+    type=["xlsx", "json", "parquet", "pq"],
     help="Opcional: Permite detalhamento fino por UF exportadora/importadora."
 )
 
 uploaded_comtrade = st.sidebar.file_uploader(
     "3. Arquivo UN Comtrade (Mundo)",
-    type=["xlsx", "json"],
+    type=["xlsx", "json", "parquet", "pq"],
     help="Deve conter colunas de Reporter, Partner, HS6 (cmdCode) e primaryValue."
 )
 
@@ -272,7 +275,7 @@ if "df_processed" not in st.session_state:
 if btn_processar:
     if uploaded_comex is not None and uploaded_comtrade is not None:
         try:
-            with st.spinner("Lendo estrutura wide do Comexstat, processando VCR e categorias CGCE/ISIC/CUCI..."):
+            with st.spinner("Lendo bases (Excel, JSON ou Parquet), processando VCR e categorias..."):
                 df_cx = read_uploaded_file(uploaded_comex)
                 df_ct = read_uploaded_file(uploaded_comtrade)
                 df_uf = read_uploaded_file(uploaded_comex_uf) if uploaded_comex_uf else None
@@ -304,31 +307,22 @@ if df_main is None or df_main.empty:
     st.markdown("<br>", unsafe_allow_html=True)
     st.info("ℹ️ **Sistema em Espera:** Faça o upload dos documentos no painel lateral para processar os indicadores.")
 
-    tab_req = st.tabs(["📑 Requisitos Técnicos e Mapeamento de Colunas"])
+    tab_req = st.tabs(["📑 Requisitos Técnicos e Formatos Aceitos"])
     with tab_req[0]:
-        st.markdown("### Suporte Expandido a Colunas e Dados Pivotados por Ano")
+        st.markdown("### Formatos Suportados: Excel (`.xlsx`), JSON (`.json`) e Parquet (`.parquet` / `.pq`)")
         c_a, c_b = st.columns(2)
         with c_a:
             st.markdown("#### Comexstat (Brasil & UF)")
             st.markdown("""
-            O sistema reconhece automaticamente tabelas no formato wide com colunas do tipo:
-            - **Anos e Valores:** `2020 - Valor US$ FOB`, `2020 - Valor US$ CIF`, `2021 - Valor US$ FOB`, etc.
-            - **Dimensões Suportadas:**
-              - `País` / `País de Destino`
-              - `NCM` / `SH6`
-              - `CGCE 1` / `CGCE 2`
-              - `CUCI Grupo / produtos`
-              - `ISIC Seção` / `ISIC Divisão`
-              - `UF`
+            - **Formatos:** `.xlsx`, `.json`, `.parquet`, `.pq`
+            - **Anos e Valores:** Reconhece colunas no formato `2020 - Valor US$ FOB`, `2020 - Valor US$ CIF`, etc.
+            - **Dimensões:** `País`, `NCM`, `SH6`, `CGCE 1`, `CGCE 2`, `CUCI Grupo / produtos`, `ISIC Seção`, `ISIC Divisão`, `UF`.
             """)
         with c_b:
             st.markdown("#### UN Comtrade (Mundo)")
             st.markdown("""
-            - `cmdCode` (SH6 de 6 dígitos)
-            - `reporterCode` (País reportador)
-            - `partnerCode` (País parceiro)
-            - `primaryValue` (Valor das trocas em US$)
-            - `period` (Ano)
+            - **Formatos:** `.xlsx`, `.json`, `.parquet`, `.pq`
+            - **Campos:** `cmdCode` (SH6), `reporterCode`, `partnerCode`, `primaryValue`, `period`.
             """)
 else:
     tot_val_bruto = float(df_main["val_exp_br"].sum())
