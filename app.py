@@ -1,6 +1,6 @@
 """
 Radar de Comércio Exterior & VCR - CNI / CIN
-Aplicação consolidada em um único arquivo.
+Aplicação consolidada e pronta para implantação.
 """
 from __future__ import annotations
 
@@ -118,14 +118,28 @@ def fmt_pct(valor: float) -> str:
 # =============================================================================
 # LEITURA DE DADOS (DATA I/O)
 # =============================================================================
+def _find_file_case_insensitive(directory: str, target_filename: str) -> str | None:
+    """Procura um arquivo no diretório ignorando case (compatibilidade Linux/Windows)."""
+    if not os.path.exists(directory):
+        return None
+    for filename in os.listdir(directory):
+        if filename.lower() == target_filename.lower():
+            return os.path.join(directory, filename)
+    return None
+
+
 def read_csv_safe(path: str) -> pd.DataFrame | None:
-    """Lê um CSV (separador ';') com fallback de encoding utf-8 -> latin-1."""
-    if not os.path.exists(path):
+    """Lê um CSV (separador ';') com busca flexível do nome e fallback de encoding."""
+    dir_name = os.path.dirname(path)
+    file_name = os.path.basename(path)
+    real_path = _find_file_case_insensitive(dir_name, file_name)
+
+    if not real_path or not os.path.exists(real_path):
         return None
     try:
-        return pd.read_csv(path, sep=";", dtype=str, encoding="utf-8")
+        return pd.read_csv(real_path, sep=";", dtype=str, encoding="utf-8")
     except UnicodeDecodeError:
-        return pd.read_csv(path, sep=";", dtype=str, encoding="latin-1")
+        return pd.read_csv(real_path, sep=";", dtype=str, encoding="latin-1")
 
 
 def read_uploaded_file(file) -> pd.DataFrame | None:
@@ -414,7 +428,7 @@ def render_sidebar(aux_tables: dict) -> tuple[int, bool, dict]:
 
     st.sidebar.markdown("---")
     btn_processar = st.sidebar.button(
-        "🚀 Executar Análise e Processar Dados", type="primary", use_container_width=True
+        "🚀 Executar Análise e Processar Dados", type="primary", width="stretch"
     )
 
     if aux_tables.get("mestre") is not None and not aux_tables["mestre"].empty:
@@ -515,7 +529,7 @@ def render_tab_isic(df_main) -> None:
         df_isic_grp["Valor Exportado"] = df_isic_grp["total_val_bruto"].apply(fmt_usd)
         st.dataframe(
             df_isic_grp[["isic_secao", "qtd_sh6", "Valor Exportado"]],
-            hide_index=True, use_container_width=True,
+            hide_index=True, width="stretch",
         )
 
     with col_isic_prod:
@@ -555,7 +569,7 @@ def render_tab_cuci(df_main, raw_comex) -> None:
         ncms_summary["Exportação"] = ncms_summary["val_exp_br"].apply(fmt_usd)
         st.dataframe(
             ncms_summary[["ncm", "desc_sh6", "Exportação"]],
-            hide_index=True, use_container_width=True,
+            hide_index=True, width="stretch",
         )
 
     with col_paises:
@@ -587,13 +601,13 @@ def render_tab_cgce(df_main) -> None:
         st.markdown("#### Distribuição por CGCE Nível 1")
         cgce1_summary = df_main.groupby("cgce_1").agg({"val_exp_br": "sum", "sh6": "count"}).reset_index()
         cgce1_summary["Valor"] = cgce1_summary["val_exp_br"].apply(fmt_usd)
-        st.dataframe(cgce1_summary[["cgce_1", "sh6", "Valor"]], hide_index=True, use_container_width=True)
+        st.dataframe(cgce1_summary[["cgce_1", "sh6", "Valor"]], hide_index=True, width="stretch")
 
     with c2:
         st.markdown("#### Distribuição por CGCE Nível 2")
         cgce2_summary = df_main.groupby("cgce_2").agg({"val_exp_br": "sum", "sh6": "count"}).reset_index()
         cgce2_summary["Valor"] = cgce2_summary["val_exp_br"].apply(fmt_usd)
-        st.dataframe(cgce2_summary[["cgce_2", "sh6", "Valor"]], hide_index=True, use_container_width=True)
+        st.dataframe(cgce2_summary[["cgce_2", "sh6", "Valor"]], hide_index=True, width="stretch")
 
 
 def render_main_panel(horizonte: int) -> None:
