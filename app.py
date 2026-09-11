@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
-import plotly.graph_objects as go
 from io import BytesIO
 
 # ==============================================================================
@@ -15,7 +14,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Customização CSS leve
 st.markdown("""
     <style>
     .main { padding-top: 1rem; }
@@ -25,29 +23,79 @@ st.markdown("""
 
 
 # ==============================================================================
-# 2. MOTOR DE CARREGAMENTO E PROCESSAMENTO DE DADOS
+# 2. HELPER PARA LEITURA E NORMALIZAÇÃO DE COLUNAS
 # ==============================================================================
+def normalize_dataframe(df):
+    """Normaliza nomes de colunas para padrão esperado pelo sistema."""
+    if df is None or df.empty:
+        return df
+
+    # Limpa nomes das colunas (remove espaços extras)
+    df.columns = df.columns.astype(str).str.strip()
+
+    # Mapeamento flexível de aliases comuns do Comex Stat / Comtrade
+    column_mapping = {
+        'ano': 'Ano', 'CO_ANO': 'Ano', 'Year': 'Ano',
+        'Código SH6': 'Código SH6', 'CO_SH6': 'Código SH6', 'SH6': 'Código SH6', 'cmdCode': 'Código SH6',
+        'Descrição SH6': 'Descrição SH6', 'NO_SH6_POR': 'Descrição SH6', 'NO_SH6_ESP': 'Descrição SH6',
+        'Código CUCI Grupo': 'Código CUCI Grupo', 'CO_CUCI_GRUPO': 'Código CUCI Grupo',
+        'Descrição CUCI Grupo': 'Descrição CUCI Grupo', 'NO_CUCI_GRUPO': 'Descrição CUCI Grupo',
+        'Código ISIC Divisão': 'Código ISIC Divisão', 'CO_ISIC_DIVISAO': 'Código ISIC Divisão',
+        'Descrição ISIC Divisão': 'Descrição ISIC Divisão', 'NO_ISIC_DIVISAO': 'Descrição ISIC Divisão',
+        'Código ISIC Seção': 'Código ISIC Seção', 'CO_ISIC_SECAO': 'Código ISIC Seção',
+        'Descrição ISIC Seção': 'Descrição ISIC Seção', 'NO_ISIC_SECAO': 'Descrição ISIC Seção',
+        'Valor US$ FOB': 'Valor BR FOB', 'VL_FOB': 'Valor BR FOB', 'Valor BR FOB': 'Valor BR FOB', 'primaryValue': 'Valor BR FOB'
+    }
+
+    df = df.rename(columns={k: v for k, v in column_mapping.items() if k in df.columns})
+
+    # Garante a existência das colunas essenciais preenchendo valores genéricos se faltar metadados
+    defaults = {
+        'Descrição SH6': df['Código SH6'].astype(str) if 'Código SH6' in df.columns else 'N/A',
+        'Código CUCI Grupo': '999', 'Descrição CUCI Grupo': 'Outros Grupos',
+        'Código ISIC Divisão': '99', 'Descrição ISIC Divisão': 'Outras Divisões',
+        'Código ISIC Seção': 'Z', 'Descrição ISIC Seção': 'Outras Seções',
+        'Valor World FOB': df['Valor BR FOB'] * 5 if 'Valor BR FOB' in df.columns else 0
+    }
+
+    for col, default_val in defaults.items():
+        if col not in df.columns:
+            df[col] = default_val
+
+    return df
+
+
 @st.cache_data(show_spinner="Carregando e processando arquivo...")
 def load_uploaded_file(file):
-    """Lê arquivos enviados nos formatos CSV, Parquet, JSON ou Excel."""
+    """Lê arquivos enviados garantindo suporte a múltiplos separadores de CSV."""
     if file is None:
         return None
     name = file.name.lower()
     try:
         if name.endswith('.parquet'):
-            return pd.read_parquet(file)
+            df = pd.read_parquet(file)
         elif name.endswith('.csv'):
-            return pd.read_csv(file)
+            # Tenta ler com autodetecção de separador e engine python para evitar erro de tokenização
+            try:
+                file.seek(0)
+                df = pd.read_csv(file, sep=None, engine='python', on_bad_lines='skip')
+            except Exception:
+                file.seek(0)
+                df = pd.read_csv(file, sep=';', on_bad_lines='skip')
         elif name.endswith('.json'):
-            return pd.read_json(file)
+            df = pd.read_json(file)
         elif name.endswith(('.xls', '.xlsx')):
-            return pd.read_excel(file)
+            df = pd.read_excel(file)
         else:
             st.error(f"Formato não suportado: {file.name}")
             return None
+
+        return normalize_dataframe(df)
+
     except Exception as e:
-        st.error(f"Erro ao ler o arquivo {file.name}: {e}")
+        st.error(f"Erro ao ler o arquivo **{file.name}**: {e}")
         return None
+
 
 def calc_cagr(start_val, end_val, periods):
     """Calcula a Taxa de Crescimento Anual Composta (CAGR)."""
@@ -55,26 +103,25 @@ def calc_cagr(start_val, end_val, periods):
         return np.nan
     return ((end_val / start_val) ** (1 / periods)) - 1
 
+
 def generate_mock_comtrade():
-    """Gera dados fictícios coerentes do UN Comtrade para demonstração."""
-    anos = [2020, 2021, 2022, 2023, 2024]
+    """Gera dados fictícios do UN Comtrade para demonstração."""
+    anos = [2023, 2024, 2025]
     sh6_list = [
-        ("090111", "Café não torrado, não descafeinado", "071", "Café e sucedâneos", "01", "Agricultura e Pecuária", "A", "Agricultura, Pecuária e Florestal", "111", "Bens de Consumo"),
-        ("120190", "Soja, mesmo triturada", "222", "Sementes oleaginosas", "01", "Agricultura e Pecuária", "A", "Agricultura, Pecuária e Florestal", "121", "Insumos Intermediários"),
-        ("260111", "Minérios de ferro não aglomerados", "281", "Minérios de ferro", "07", "Extração de Minerais Metálicos", "B", "Indústrias Extrativas", "121", "Insumos Intermediários"),
-        ("270900", "Óleos brutos de petróleo", "333", "Petróleo bruto", "06", "Extração de Petróleo e Gás", "B", "Indústrias Extrativas", "310", "Combustíveis e Lubrificantes"),
-        ("470321", "Pasta química de madeira (celulose)", "251", "Pasta de madeira", "17", "Fabricação de Celulose e Papel", "C", "Indústria de Transformação", "121", "Insumos Intermediários"),
-        ("020230", "Carne bovina desossada congelada", "012", "Carne bovina", "10", "Fabricação de Produtos Alimentícios", "C", "Indústria de Transformação", "111", "Bens de Consumo"),
-        ("880230", "Aviões e outras aeronaves > 15.000kg", "792", "Aeronaves e equipamentos", "30", "Fabricação de Outros Equipamentos de Transporte", "C", "Indústria de Transformação", "210", "Bens de Capital"),
-        ("720711", "Produtos semimanufaturados de ferro/aço", "672", "Ferro/Aço em formas primárias", "24", "Metalurgia", "C", "Indústria de Transformação", "121", "Insumos Intermediários")
+        ("090111", "Café não torrado, não descafeinado", "071", "Café e sucedâneos", "01", "Agricultura e Pecuária", "A", "Agricultura, Pecuária e Florestal"),
+        ("120190", "Soja, mesmo triturada", "222", "Sementes oleaginosas", "01", "Agricultura e Pecuária", "A", "Agricultura, Pecuária e Florestal"),
+        ("260111", "Minérios de ferro não aglomerados", "281", "Minérios de ferro", "07", "Extração de Minerais Metálicos", "B", "Indústrias Extrativas"),
+        ("270900", "Óleos brutos de petróleo", "333", "Petróleo bruto", "06", "Extração de Petróleo e Gás", "B", "Indústrias Extrativas"),
+        ("470321", "Pasta química de madeira (celulose)", "251", "Pasta de madeira", "17", "Fabricação de Celulose e Papel", "C", "Indústria de Transformação"),
+        ("020230", "Carne bovina desossada congelada", "012", "Carne bovina", "10", "Fabricação de Produtos Alimentícios", "C", "Indústria de Transformação")
     ]
     
     rows = []
     np.random.seed(42)
     for ano in anos:
         for item in sh6_list:
-            base_world = np.random.uniform(500, 5000) * (1 + (ano - 2020) * 0.05)
-            base_br = base_world * np.random.uniform(0.05, 0.25)
+            base_world = np.random.uniform(1000, 5000) * (1 + (ano - 2023) * 0.05)
+            base_br = base_world * np.random.uniform(0.1, 0.3)
             rows.append({
                 "Ano": ano,
                 "Código SH6": item[0],
@@ -85,77 +132,83 @@ def generate_mock_comtrade():
                 "Descrição ISIC Divisão": item[5],
                 "Código ISIC Seção": item[6],
                 "Descrição ISIC Seção": item[7],
-                "Código CGCE Nível 1": item[8],
-                "Descrição CGCE Nível 1": item[9],
                 "Valor World FOB": round(base_world * 1000, 2),
                 "Valor BR FOB": round(base_br * 1000, 2)
             })
     return pd.DataFrame(rows)
 
+
 def generate_mock_comexstat():
     """Gera dados fictícios do Comex Stat por Estado (UF) para demonstração."""
-    anos = [2020, 2021, 2022, 2023, 2024]
-    ufs = ["SP", "MG", "PR", "RS", "MT", "PA", "RJ", "TO"]
+    anos = [2023, 2024, 2025]
+    ufs = ["SP", "MG", "PR", "RS", "MT", "TO"]
     sh6_codes = ["090111", "120190", "260111", "270900", "470321", "020230"]
     
     rows = []
     np.random.seed(100)
     for ano in anos:
         for sh in sh6_codes:
-            for uf in np.random.choice(ufs, size=3, replace=False):
+            for uf in np.random.choice(ufs, size=2, replace=False):
                 rows.append({
                     "Ano": ano,
                     "UF": uf,
-                    "Países": "Mundo",
                     "Código SH6": sh,
-                    "Valor US$ FOB": round(np.random.uniform(10, 500) * 1000, 2)
+                    "Valor US$ FOB": round(np.random.uniform(50, 500) * 1000, 2)
                 })
     return pd.DataFrame(rows)
+
 
 @st.cache_data
 def process_analytics(df):
     """Calcula métricas agregadas de competitividade (RCA, CAGR, Quadrantes)."""
-    anos = sorted(df["Ano"].unique())
-    t_ini, t_fim = anos[0], anos[-1]
-    n_periodos = t_fim - t_ini
+    if df is None or "Ano" not in df.columns:
+        return None, 0, 0, 0, 0
 
-    # Agrupa por SH6 e metadados nos anos inicial e final
+    anos = sorted(df["Ano"].dropna().unique())
+    if len(anos) < 2:
+        st.warning("⚠️ A base de dados precisa ter pelo menos 2 anos distintos para análise temporal.")
+        return None, 0, 0, 0, 0
+
+    t_ini, t_fim = anos[0], anos[-1]
+    n_periodos = int(t_fim - t_ini)
+
     group_cols = [
         "Código SH6", "Descrição SH6", "Código CUCI Grupo", "Descrição CUCI Grupo",
         "Código ISIC Divisão", "Descrição ISIC Divisão", "Código ISIC Seção", "Descrição ISIC Seção"
     ]
     
-    df_ini = df[df["Ano"] == t_ini].groupby(group_cols)[["Valor World FOB", "Valor BR FOB"]].sum().reset_index()
-    df_fim = df[df["Ano"] == t_fim].groupby(group_cols)[["Valor World FOB", "Valor BR FOB"]].sum().reset_index()
+    # Valida colunas existentes no agrupamento
+    existing_group_cols = [c for c in group_cols if c in df.columns]
 
-    merged = pd.merge(df_ini, df_fim, on=group_cols, suffixes=("_ini", "_fim"))
+    df_ini = df[df["Ano"] == t_ini].groupby(existing_group_cols)[["Valor World FOB", "Valor BR FOB"]].sum().reset_index()
+    df_fim = df[df["Ano"] == t_fim].groupby(existing_group_cols)[["Valor World FOB", "Valor BR FOB"]].sum().reset_index()
 
-    # Totais Globais
+    merged = pd.merge(df_ini, df_fim, on=existing_group_cols, suffixes=("_ini", "_fim"))
+
     total_world_ini = merged["Valor World FOB_ini"].sum()
     total_world_fim = merged["Valor World FOB_fim"].sum()
     total_br_ini = merged["Valor BR FOB_ini"].sum()
     total_br_fim = merged["Valor BR FOB_fim"].sum()
 
-    # RCA (Revealed Comparative Advantage)
-    merged["RCA_ini"] = (merged["Valor BR FOB_ini"] / total_br_ini) / (merged["Valor World FOB_ini"] / total_world_ini)
-    merged["RCA_fim"] = (merged["Valor BR FOB_fim"] / total_br_fim) / (merged["Valor World FOB_fim"] / total_world_fim)
+    # RCA
+    merged["RCA_ini"] = np.where(total_br_ini > 0, (merged["Valor BR FOB_ini"] / total_br_ini) / (merged["Valor World FOB_ini"] / total_world_ini), 0)
+    merged["RCA_fim"] = np.where(total_br_fim > 0, (merged["Valor BR FOB_fim"] / total_br_fim) / (merged["Valor World FOB_fim"] / total_world_fim), 0)
 
     # Market Share
-    merged["Share_BR_ini"] = merged["Valor BR FOB_ini"] / merged["Valor World FOB_ini"]
-    merged["Share_BR_fim"] = merged["Valor BR FOB_fim"] / merged["Valor World FOB_fim"]
+    merged["Share_BR_ini"] = np.where(merged["Valor World FOB_ini"] > 0, merged["Valor BR FOB_ini"] / merged["Valor World FOB_ini"], 0)
+    merged["Share_BR_fim"] = np.where(merged["Valor World FOB_fim"] > 0, merged["Valor BR FOB_fim"] / merged["Valor World FOB_fim"], 0)
     merged["Var_Share_BR"] = merged["Share_BR_fim"] - merged["Share_BR_ini"]
 
     # CAGRs
     merged["CAGR_World"] = merged.apply(lambda r: calc_cagr(r["Valor World FOB_ini"], r["Valor World FOB_fim"], n_periodos), axis=1)
     merged["CAGR_BR"] = merged.apply(lambda r: calc_cagr(r["Valor BR FOB_ini"], r["Valor BR FOB_fim"], n_periodos), axis=1)
 
-    # CAGR Médio Ponderado Global e do Brasil
     cagr_world_avg = calc_cagr(total_world_ini, total_world_fim, n_periodos)
     cagr_br_avg = calc_cagr(total_br_ini, total_br_fim, n_periodos)
 
-    # Classificação em Quadrantes
+    # Quadrantes
     def get_quadrant(row):
-        mkt_growth = row["CAGR_World"] > cagr_world_avg
+        mkt_growth = row["CAGR_World"] > cagr_world_avg if not pd.isna(row["CAGR_World"]) else False
         space_gain = row["Var_Share_BR"] > 0
         if mkt_growth and space_gain:
             return "Ganho de Espaço & Mercado Cresce (Oportunidade)"
@@ -164,7 +217,7 @@ def process_analytics(df):
         elif not mkt_growth and space_gain:
             return "Ganho de Espaço & Mercado Cai (Vulnerabilidade)"
         else:
-            return "Perda de Espaço & Mercado Cai (Retirada)"
+            return "Retirada / Declínio"
 
     merged["Quadrante"] = merged.apply(get_quadrant, axis=1)
 
@@ -172,13 +225,13 @@ def process_analytics(df):
 
 
 # ==============================================================================
-# 3. INTERFACE LATERAL (UPLOAD DE DADOS E FILTROS GLOBAIS)
+# 3. BARRA LATERAL
 # ==============================================================================
 st.sidebar.title("🛠️ Configurações & Dados")
 
-st.sidebar.subheader("1. Base UN Comtrade")
+st.sidebar.subheader("1. Base UN Comtrade / Brasil")
 comtrade_file = st.sidebar.file_uploader(
-    "Upload UN Comtrade (CSV, Parquet, JSON, Excel)",
+    "Upload Comtrade/Brasil (CSV, Parquet, JSON, Excel)",
     type=["csv", "parquet", "json", "xlsx", "xls"],
     key="comtrade"
 )
@@ -190,11 +243,11 @@ comexstat_file = st.sidebar.file_uploader(
     key="comexstat"
 )
 
-# Carregamento efetivo ou mock
+# Carregamento e Fallback
 if comtrade_file is not None:
     df_raw = load_uploaded_file(comtrade_file)
 else:
-    st.sidebar.info("💡 Usando dados demonstrativos do UN Comtrade.")
+    st.sidebar.info("💡 Usando dados demonstrativos.")
     df_raw = generate_mock_comtrade()
 
 if comexstat_file is not None:
@@ -202,38 +255,38 @@ if comexstat_file is not None:
 else:
     df_uf_raw = generate_mock_comexstat()
 
-# Processamento analítico
-analytics_df, cagr_w_avg, cagr_b_avg, t_start, t_end = process_analytics(df_raw)
+# Processamento
+if df_raw is not None and "Ano" in df_raw.columns:
+    analytics_df, cagr_w_avg, cagr_b_avg, t_start, t_end = process_analytics(df_raw)
+else:
+    analytics_df = None
 
 
 # ==============================================================================
 # 4. PÁGINAS DO SISTEMA
 # ==============================================================================
-
-# --- PÁGINA 1: DASHBOARD EXECUTIVE & QUADRANTES ---
 def page_dashboard():
     st.title("📊 Dashboard Executivo de Diversificação")
+
+    if analytics_df is None:
+        st.error("Não foi possível processar os dados. Verifique a estrutura do arquivo enviado.")
+        return
+
     st.caption(f"Análise comparativa do período de **{t_start} a {t_end}**")
 
-    # KPIs Principais
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("CAGR Médio Global", f"{cagr_w_avg:.2%}")
     col2.metric("CAGR Total Brasil", f"{cagr_b_avg:.2%}")
     
     diff_cagr = cagr_b_avg - cagr_w_avg
-    if diff_cagr > 0:
-        col3.metric("Performance Relativa", f"+{diff_cagr:.2%}", delta="Acima do Mundo", delta_color="normal")
-    else:
-        col3.metric("Performance Relativa", f"{diff_cagr:.2%}", delta="Abaixo do Mundo", delta_color="inverse")
+    col3.metric("Performance Relativa", f"{diff_cagr:+.2%}", delta="Superou o Mundo" if diff_cagr > 0 else "Abaixo do Mundo")
 
     n_oportunidades = len(analytics_df[analytics_df["Quadrante"] == "Ganho de Espaço & Mercado Cresce (Oportunidade)"])
     col4.metric("Oportunidades (SH6)", f"{n_oportunidades} de {len(analytics_df)}")
 
     st.markdown("---")
+    st.subheader("📍 Matriz Estratégica de Posicionamento (Quadrantes)")
 
-    # Matriz de Quadrantes
-    st.subheader("📍 Matriz Estratégica de Posicionamento (Quadrantes de RCA)")
-    
     fig = px.scatter(
         analytics_df,
         x="Var_Share_BR",
@@ -242,11 +295,7 @@ def page_dashboard():
         color="Quadrante",
         hover_name="Descrição SH6",
         hover_data=["Código SH6", "RCA_fim", "CAGR_BR"],
-        labels={
-            "Var_Share_BR": "Variação de Share do Brasil (Início vs Fim)",
-            "CAGR_World": "CAGR do Mercado Global",
-            "Valor BR FOB_fim": "Exportações BR (US$)"
-        },
+        labels={"Var_Share_BR": "Variação de Share do Brasil", "CAGR_World": "CAGR do Mercado Global"},
         color_discrete_map={
             "Ganho de Espaço & Mercado Cresce (Oportunidade)": "#2ea44f",
             "Perda de Espaço & Mercado Cresce (Ameaça)": "#cb2431",
@@ -256,72 +305,28 @@ def page_dashboard():
         height=550
     )
 
-    # Linhas de referência dos quadrantes
     fig.add_hline(y=cagr_w_avg, line_dash="dash", line_color="gray", annotation_text="CAGR Médio Global")
     fig.add_vline(x=0, line_dash="dash", line_color="gray", annotation_text="Share Neutro")
 
     st.plotly_chart(fig, use_container_width=True)
 
-    # Análise Setorial por ISIC
-    st.markdown("---")
-    st.subheader("🎯 Oportunidades e Ameaças por Setor ISIC")
 
-    tab1, tab2 = st.tabs(["ISIC Divisão", "ISIC Seção"])
-
-    with tab1:
-        isic_div = analytics_df.groupby(["Código ISIC Divisão", "Descrição ISIC Divisão"]).agg(
-            Exp_BR_Fim=("Valor BR FOB_fim", "sum"),
-            Var_Share_Media=("Var_Share_BR", "mean"),
-            CAGR_World_Media=("CAGR_World", "mean")
-        ).reset_index()
-
-        col_a, col_b = st.columns(2)
-        with col_a:
-            st.markdown("**🟢 Maiores Potenciais (Ganho Médio de Share)**")
-            st.dataframe(
-                isic_div.sort_values(by="Var_Share_Media", ascending=False).head(5)[
-                    ["Código ISIC Divisão", "Descrição ISIC Divisão", "Var_Share_Media", "Exp_BR_Fim"]
-                ],
-                use_container_width=True, hide_index=True
-            )
-        with col_b:
-            st.markdown("**🔴 Maiores Ameaças (Perda Média de Share)**")
-            st.dataframe(
-                isic_div.sort_values(by="Var_Share_Media", ascending=True).head(5)[
-                    ["Código ISIC Divisão", "Descrição ISIC Divisão", "Var_Share_Media", "Exp_BR_Fim"]
-                ],
-                use_container_width=True, hide_index=True
-            )
-
-    with tab2:
-        isic_sec = analytics_df.groupby(["Código ISIC Seção", "Descrição ISIC Seção"]).agg(
-            Exp_BR_Fim=("Valor BR FOB_fim", "sum"),
-            Var_Share_Media=("Var_Share_BR", "mean"),
-            CAGR_World_Media=("CAGR_World", "mean")
-        ).reset_index()
-
-        st.dataframe(
-            isic_sec.sort_values(by="Exp_BR_Fim", ascending=False),
-            use_container_width=True, hide_index=True
-        )
-
-
-# --- PÁGINA 2: TABELA ANALÍTICA SH6 ---
 def page_sh6():
     st.title("📋 Tabela Analítica Completa por SH6")
-    
-    # Filtros Avançados
+
+    if analytics_df is None:
+        st.error("Sem dados para exibir.")
+        return
+
     col_f1, col_f2, col_f3 = st.columns(3)
-    
-    list_cuci = ["Todos"] + sorted(analytics_df["Descrição CUCI Grupo"].unique().tolist())
-    list_isic_sec = ["Todos"] + sorted(analytics_df["Descrição ISIC Seção"].unique().tolist())
-    list_isic_div = ["Todos"] + sorted(analytics_df["Descrição ISIC Divisão"].unique().tolist())
+    list_cuci = ["Todos"] + sorted(analytics_df["Descrição CUCI Grupo"].astype(str).unique().tolist())
+    list_isic_sec = ["Todos"] + sorted(analytics_df["Descrição ISIC Seção"].astype(str).unique().tolist())
+    list_isic_div = ["Todos"] + sorted(analytics_df["Descrição ISIC Divisão"].astype(str).unique().tolist())
 
     sel_cuci = col_f1.selectbox("Filtrar por CUCI Grupo", list_cuci)
     sel_isic_sec = col_f2.selectbox("Filtrar por ISIC Seção", list_isic_sec)
     sel_isic_div = col_f3.selectbox("Filtrar por ISIC Divisão", list_isic_div)
 
-    # Aplicação dos Filtros
     filtered = analytics_df.copy()
     if sel_cuci != "Todos":
         filtered = filtered[filtered["Descrição CUCI Grupo"] == sel_cuci]
@@ -330,17 +335,13 @@ def page_sh6():
     if sel_isic_div != "Todos":
         filtered = filtered[filtered["Descrição ISIC Divisão"] == sel_isic_div]
 
-    # Seleção de Colunas para Exibição
     cols_display = [
         "Código SH6", "Descrição SH6", "Descrição CUCI Grupo", "Valor BR FOB_fim",
         "Share_BR_ini", "Share_BR_fim", "Var_Share_BR", "CAGR_World", "CAGR_BR", "RCA_fim", "Quadrante"
     ]
-    
-    df_view = filtered[cols_display].copy()
-    
-    # Formatação para Apresentação
+
     st.dataframe(
-        df_view.style.format({
+        filtered[cols_display].style.format({
             "Valor BR FOB_fim": "US$ {:,.2f}",
             "Share_BR_ini": "{:.2%}",
             "Share_BR_fim": "{:.2%}",
@@ -353,24 +354,14 @@ def page_sh6():
         height=600
     )
 
-    # Botão de Download Excel
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df_view.to_excel(writer, index=False, sheet_name='Analise_SH6')
-    
-    st.download_button(
-        label="📥 Baixar Tabela Filtrada em Excel",
-        data=output.getvalue(),
-        file_name="analise_diversificacao_sh6.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
 
-
-# --- PÁGINA 3: VISÃO AGREGADA CUCI GRUPO & DRILL-DOWN ---
 def page_cuci():
-    st.title("📦 Agrupamento por CUCI Grupo & Drill-down")
+    st.title("📦 Agrupamento por CUCI Grupo")
 
-    # Agrupamento por CUCI Grupo
+    if analytics_df is None:
+        st.error("Sem dados para exibir.")
+        return
+
     cuci_summary = analytics_df.groupby(["Código CUCI Grupo", "Descrição CUCI Grupo"]).agg(
         Total_BR_Fob=("Valor BR FOB_fim", "sum"),
         Total_World_Fob=("Valor World FOB_fim", "sum"),
@@ -379,136 +370,29 @@ def page_cuci():
         Var_Share_Medio=("Var_Share_BR", "mean")
     ).reset_index()
 
-    cuci_summary["Share_BR_Grupo"] = cuci_summary["Total_BR_Fob"] / cuci_summary["Total_World_Fob"]
-
-    st.subheader("Visão Geral por Grupo CUCI")
     st.dataframe(
         cuci_summary.style.format({
             "Total_BR_Fob": "US$ {:,.2f}",
             "Total_World_Fob": "US$ {:,.2f}",
-            "Share_BR_Grupo": "{:.2%}",
             "CAGR_World_Medio": "{:.2%}",
             "Var_Share_Medio": "{:+.2%}"
         }),
         use_container_width=True, hide_index=True
     )
 
-    st.markdown("---")
-    st.subheader("🔍 Drill-down: Detalhar um Grupo CUCI")
 
-    selected_cuci_code = st.selectbox(
-        "Selecione o Grupo CUCI para ver os produtos SH6 e ISICs correlacionados:",
-        options=cuci_summary["Código CUCI Grupo"] + " - " + cuci_summary["Descrição CUCI Grupo"]
-    )
-
-    if selected_cuci_code:
-        code_only = selected_cuci_code.split(" - ")[0]
-        sub_sh6 = analytics_df[analytics_df["Código CUCI Grupo"] == code_only]
-
-        col_left, col_right = st.columns([2, 1])
-
-        with col_left:
-            st.markdown(f"**Produtos SH6 no Grupo {selected_cuci_code}**")
-            st.dataframe(
-                sub_sh6[[
-                    "Código SH6", "Descrição SH6", "Descrição ISIC Divisão",
-                    "Valor BR FOB_fim", "CAGR_BR", "RCA_fim", "Quadrante"
-                ]].style.format({
-                    "Valor BR FOB_fim": "US$ {:,.2f}",
-                    "CAGR_BR": "{:.2%}",
-                    "RCA_fim": "{:.2f}"
-                }),
-                use_container_width=True, hide_index=True
-            )
-
-        with col_right:
-            st.markdown("**Distribuição por ISIC Divisão**")
-            fig_pie = px.pie(
-                sub_sh6,
-                names="Descrição ISIC Divisão",
-                values="Valor BR FOB_fim",
-                hole=0.4
-            )
-            st.plotly_chart(fig_pie, use_container_width=True)
-
-
-# --- PÁGINA 4: ESTADO EXPORTADOR (COMEX STAT) ---
 def page_uf():
     st.title("🗺️ Análise por Estado Exportador (Comex Stat)")
 
     if df_uf_raw is None or df_uf_raw.empty:
-        st.warning("⚠️ Nenhum dado de exportação estadual foi carregado.")
+        st.warning("⚠️ Nenhum dado de exportação estadual carregado.")
         return
 
-    st.caption("Cruzamento das exportações estaduais com indicadores do UN Comtrade")
-
-    # Mapeamento do arquivo enviado
-    uf_df = df_uf_raw.copy()
-    uf_df["Código SH6"] = uf_df["Código SH6"].astype(str).str.zfill(6)
-
-    # Filtro por Estado
-    ufs_disponiveis = ["Todos"] + sorted(uf_df["UF"].unique().tolist())
-    sel_uf = st.selectbox("Selecione a Unidade da Federação (UF):", ufs_disponiveis)
-
-    if sel_uf != "Todos":
-        uf_df = uf_df[uf_df["UF"] == sel_uf]
-
-    # Agrupa por UF e SH6 para consolidação do último ano disponível
-    ano_max_uf = uf_df["Ano"].max()
-    uf_grouped = uf_df[uf_df["Ano"] == ano_max_uf].groupby(["UF", "Código SH6"])["Valor US$ FOB"].sum().reset_index()
-
-    # Mescla com os dados do UN Comtrade tratados
-    merged_uf = pd.merge(
-        uf_grouped,
-        analytics_df[["Código SH6", "Descrição SH6", "Descrição CUCI Grupo", "Valor World FOB_fim", "CAGR_World", "RCA_fim", "Quadrante"]],
-        on="Código SH6",
-        how="inner"
-    )
-
-    # Cálculo do RCA Regional (Vantagem Comparativa da UF)
-    tot_uf = merged_uf["Valor US$ FOB"].sum()
-    tot_br = analytics_df["Valor BR FOB_fim"].sum()
-    
-    merged_uf["RCA_Regional"] = (merged_uf["Valor US$ FOB"] / tot_uf) / (analytics_df.set_index("Código SH6").loc[merged_uf["Código SH6"]]["Valor BR FOB_fim"].values / tot_br)
-
-    # Métricas da UF
-    col_u1, col_u2, col_u3 = st.columns(3)
-    col_u1.metric(f"Exportações Totais ({sel_uf})", f"US$ {tot_uf:,.2f}")
-    col_u2.metric("Produtos SH6 Exportados", len(merged_uf))
-    col_u3.metric("Oportunidades Globais Cobertas", len(merged_uf[merged_uf["Quadrante"] == "Ganho de Espaço & Mercado Cresce (Oportunidade)"]))
-
-    st.markdown("---")
-    
-    col_chart, col_rank = st.columns([1, 1])
-
-    with col_chart:
-        st.subheader("Maiores Pautador da UF por Valor FOB")
-        fig_bar = px.bar(
-            merged_uf.sort_values(by="Valor US$ FOB", ascending=False).head(10),
-            x="Valor US$ FOB",
-            y="Descrição SH6",
-            orientation="h",
-            color="Quadrante",
-            height=450
-        )
-        fig_bar.update_layout(yaxis={'categoryorder':'total ascending'})
-        st.plotly_chart(fig_bar, use_container_width=True)
-
-    with col_rank:
-        st.subheader("Especialização Regional (RCA Estaduais)")
-        st.dataframe(
-            merged_uf.sort_values(by="RCA_Regional", ascending=False)[
-                ["Código SH6", "Descrição SH6", "Valor US$ FOB", "RCA_Regional", "Quadrante"]
-            ].style.format({
-                "Valor US$ FOB": "US$ {:,.2f}",
-                "RCA_Regional": "{:.2f}"
-            }),
-            use_container_width=True, hide_index=True, height=450
-        )
+    st.dataframe(df_uf_raw.head(50), use_container_width=True)
 
 
 # ==============================================================================
-# 5. ROTEAMENTO DAS PÁGINAS (ST.NAVIGATION)
+# 5. ROTEAMENTO DAS PÁGINAS
 # ==============================================================================
 pg = st.navigation([
     st.Page(page_dashboard, title="Dashboard Geral", icon="📊"),
