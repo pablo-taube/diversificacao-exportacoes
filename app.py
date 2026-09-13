@@ -482,20 +482,60 @@ QUADRANT_ORDER = [
     "Ameaça (perda de espaço, mercado cai)",
 ]
 
+# Categorias usadas quando o Comtrade traz apenas 1 ano: não é possível calcular
+# variação de RCA nem CAGR mundial (exigem 2 pontos no tempo), mas o RCA em
+# nível (Balassa) para o ano disponível continua sendo calculado normalmente.
+SINGLE_YEAR_QUADRANTS = [
+    "Vantagem Comparativa (RCA ≥ 1)",
+    "Sem Vantagem Comparativa (RCA < 1)",
+]
+
 QUADRANT_SHORT = {
     "Estrela (ganho de espaço, mercado cresce)": "Estrela",
     "Oportunidade perdida (perda de espaço, mercado cresce)": "Oportunidade perdida",
     "Resistência (ganho de espaço, mercado cai)": "Resistência",
     "Ameaça (perda de espaço, mercado cai)": "Ameaça",
+    "Vantagem Comparativa (RCA ≥ 1)": "Vantagem Comparativa",
+    "Sem Vantagem Comparativa (RCA < 1)": "Sem Vantagem Comparativa",
     "Sem dados suficientes": "Sem dados",
 }
 
 QUADRANT_COLORS = {
     "Estrela (ganho de espaço, mercado cresce)": "#1a9850",
-    "Oportunidade perdida (perda de espaço, mercado cresce)": "#fdae61",
-    "Resistência (ganho de espaço, mercado cai)": "#91bfdb",
+    "Oportunidade perdida (perda de espaço, mercado cresce)": "#f5a623",
+    "Resistência (ganho de espaço, mercado cai)": "#4a90d9",
     "Ameaça (perda de espaço, mercado cai)": "#d73027",
+    "Vantagem Comparativa (RCA ≥ 1)": "#1a9850",
+    "Sem Vantagem Comparativa (RCA < 1)": "#d73027",
     "Sem dados suficientes": "#bdbdbd",
+}
+
+# Descrição curta usada nos cartões de quadrante do dashboard (estilo "CNI")
+QUADRANT_DESCRIPTIONS = {
+    "Estrela (ganho de espaço, mercado cresce)": [
+        "O Brasil ganha espaço competitivo (↑ RCA) no produto",
+        "O mercado mundial do produto está em expansão (CAGR mundial > 0)",
+    ],
+    "Oportunidade perdida (perda de espaço, mercado cresce)": [
+        "O Brasil perde espaço competitivo (↓ RCA) no produto",
+        "O mercado mundial do produto está em expansão (CAGR mundial > 0)",
+    ],
+    "Resistência (ganho de espaço, mercado cai)": [
+        "O Brasil ganha espaço competitivo (↑ RCA) no produto",
+        "O mercado mundial do produto está em retração (CAGR mundial < 0)",
+    ],
+    "Ameaça (perda de espaço, mercado cai)": [
+        "O Brasil perde espaço competitivo (↓ RCA) no produto",
+        "O mercado mundial do produto está em retração (CAGR mundial < 0)",
+    ],
+    "Vantagem Comparativa (RCA ≥ 1)": [
+        "O Brasil é mais especializado neste produto do que na pauta média mundial (RCA ≥ 1)",
+        "Apenas 1 ano de Comtrade disponível — sem tendência (CAGR/variação de RCA)",
+    ],
+    "Sem Vantagem Comparativa (RCA < 1)": [
+        "O Brasil é menos especializado neste produto do que na pauta média mundial (RCA < 1)",
+        "Apenas 1 ano de Comtrade disponível — sem tendência (CAGR/variação de RCA)",
+    ],
 }
 
 
@@ -513,6 +553,15 @@ def classify_quadrant(delta_rca: float, cagr_world: float) -> str:
     return QUADRANT_ORDER[3]
 
 
+def classify_quadrant_single_year(rca: float) -> str:
+    """Classificação simplificada usada quando só há 1 ano de dados Comtrade:
+    não há como medir tendência (variação de RCA / CAGR mundial), então o
+    produto é classificado apenas pelo nível do RCA (Balassa) naquele ano."""
+    if pd.isna(rca):
+        return "Sem dados suficientes"
+    return SINGLE_YEAR_QUADRANTS[0] if rca >= 1 else SINGLE_YEAR_QUADRANTS[1]
+
+
 def build_world_brazil_wide(comtrade_tidy: pd.DataFrame) -> pd.DataFrame:
     """Pivota a base tidy do Comtrade em colunas Mundo/Brasil por ano e sh6."""
     wide = comtrade_tidy.pivot_table(
@@ -528,15 +577,32 @@ def build_world_brazil_wide(comtrade_tidy: pd.DataFrame) -> pd.DataFrame:
 @st.cache_data(show_spinner=False)
 def compute_product_metrics(comtrade_tidy: pd.DataFrame, start_year: int, end_year: int) -> pd.DataFrame:
     """
-    Calcula, para cada SH6: valores em início/fim de período, CAGR mundial e
-    do Brasil, participação de mercado, RCA em início/fim, variação de
-    RCA/participação e o quadrante de competitividade.
+    Calcula, para cada SH6, as métricas de competitividade a partir do Comtrade.
+
+    - Quando `start_year != end_year` (2 anos disponíveis): valores em início/fim
+      de período, CAGR mundial e do Brasil, participação de mercado, RCA em
+      início/fim, variação de RCA/participação e o quadrante de competitividade
+      (matriz RCA × crescimento do mercado mundial).
+    - Quando `start_year == end_year` (apenas 1 ano de Comtrade disponível): o
+      RCA (Balassa) é calculado normalmente para aquele único ano — o que NÃO
+      depende de série temporal —, mas CAGR mundial/Brasil e a variação de RCA
+      ficam indisponíveis (NaN) e o produto é classificado apenas pelo nível
+      do RCA (Vantagem Comparativa / Sem Vantagem Comparativa).
     """
+    single_year = start_year == end_year
+    years_needed = [start_year] if single_year else [start_year, end_year]
+
     wide = build_world_brazil_wide(comtrade_tidy)
-    wide = wide[wide["ano"].isin([start_year, end_year])]
+    wide = wide[wide["ano"].isin(years_needed)]
     n_years = end_year - start_year
 
     totals = wide.groupby("ano")[["Mundo", "Brasil"]].sum()
+
+    def _safe_rca(braz, braz_tot, world, world_tot):
+        vals = [braz, braz_tot, world, world_tot]
+        if any(pd.isna(v) for v in vals) or any(v == 0 for v in vals):
+            return np.nan
+        return (braz / braz_tot) / (world / world_tot)
 
     rows = []
     for sh6, g in wide.groupby("sh6"):
@@ -544,34 +610,40 @@ def compute_product_metrics(comtrade_tidy: pd.DataFrame, start_year: int, end_ye
         g = g.set_index("ano")
 
         world_start = g["Mundo"].get(start_year, np.nan)
-        world_end = g["Mundo"].get(end_year, np.nan)
         braz_start = g["Brasil"].get(start_year, np.nan)
-        braz_end = g["Brasil"].get(end_year, np.nan)
-
         world_tot_start = totals["Mundo"].get(start_year, np.nan)
-        world_tot_end = totals["Mundo"].get(end_year, np.nan)
         braz_tot_start = totals["Brasil"].get(start_year, np.nan)
-        braz_tot_end = totals["Brasil"].get(end_year, np.nan)
 
         share_start = (braz_start / world_start) if (pd.notna(world_start) and world_start > 0) else np.nan
-        share_end = (braz_end / world_end) if (pd.notna(world_end) and world_end > 0) else np.nan
-
-        def _safe_rca(braz, braz_tot, world, world_tot):
-            vals = [braz, braz_tot, world, world_tot]
-            if any(pd.isna(v) for v in vals) or any(v == 0 for v in vals):
-                return np.nan
-            return (braz / braz_tot) / (world / world_tot)
-
         rca_start = _safe_rca(braz_start, braz_tot_start, world_start, world_tot_start)
-        rca_end = _safe_rca(braz_end, braz_tot_end, world_end, world_tot_end)
 
-        cagr_world = cagr(world_start, world_end, n_years)
-        cagr_brasil = cagr(braz_start, braz_end, n_years)
+        if single_year:
+            # Sem segundo ponto no tempo: RCA de nível apenas, sem variação/CAGR.
+            world_end = world_start
+            braz_end = braz_start
+            share_end = share_start
+            rca_end = rca_start
+            cagr_world = np.nan
+            cagr_brasil = np.nan
+            delta_rca = np.nan
+            delta_share = np.nan
+            quadrant = classify_quadrant_single_year(rca_start)
+        else:
+            world_end = g["Mundo"].get(end_year, np.nan)
+            braz_end = g["Brasil"].get(end_year, np.nan)
+            world_tot_end = totals["Mundo"].get(end_year, np.nan)
+            braz_tot_end = totals["Brasil"].get(end_year, np.nan)
 
-        delta_rca = (rca_end - rca_start) if (pd.notna(rca_end) and pd.notna(rca_start)) else np.nan
-        delta_share = (share_end - share_start) if (pd.notna(share_end) and pd.notna(share_start)) else np.nan
+            share_end = (braz_end / world_end) if (pd.notna(world_end) and world_end > 0) else np.nan
+            rca_end = _safe_rca(braz_end, braz_tot_end, world_end, world_tot_end)
 
-        quadrant = classify_quadrant(delta_rca, cagr_world)
+            cagr_world = cagr(world_start, world_end, n_years)
+            cagr_brasil = cagr(braz_start, braz_end, n_years)
+
+            delta_rca = (rca_end - rca_start) if (pd.notna(rca_end) and pd.notna(rca_start)) else np.nan
+            delta_share = (share_end - share_start) if (pd.notna(share_end) and pd.notna(share_start)) else np.nan
+
+            quadrant = classify_quadrant(delta_rca, cagr_world)
 
         rows.append({
             "sh6": sh6,
@@ -591,11 +663,14 @@ def compute_product_metrics(comtrade_tidy: pd.DataFrame, start_year: int, end_ye
             "quadrante": quadrant,
         })
 
-    return pd.DataFrame(rows)
+    result = pd.DataFrame(rows)
+    result.attrs["single_year_mode"] = single_year
+    return result
 
 
 def compute_summary_kpis(product_metrics: pd.DataFrame, comtrade_tidy: pd.DataFrame,
                           start_year: int, end_year: int) -> dict:
+    single_year_mode = start_year == end_year
     n_years = end_year - start_year
     totals = comtrade_tidy.groupby(["ano", "fluxo"])["valor"].sum().unstack("fluxo")
 
@@ -627,7 +702,13 @@ def compute_summary_kpis(product_metrics: pd.DataFrame, comtrade_tidy: pd.DataFr
     produtos_perdidos = int(((product_metrics["brasil_inicio"].fillna(0) > 0) &
                               (product_metrics["brasil_fim"].fillna(0) == 0)).sum())
 
+    rca_col = "rca_fim" if "rca_fim" in product_metrics.columns else "rca_inicio"
+    rca_valid = product_metrics[rca_col].dropna()
+    rca_medio = float(rca_valid.mean()) if not rca_valid.empty else np.nan
+    n_com_vantagem = int((rca_valid >= 1).sum())
+
     return {
+        "single_year_mode": single_year_mode,
         "cagr_mundo": cagr_world,
         "cagr_brasil": cagr_brasil,
         "brasil_cresceu_mais_que_mundo": brasil_cresceu_mais,
@@ -639,6 +720,9 @@ def compute_summary_kpis(product_metrics: pd.DataFrame, comtrade_tidy: pd.DataFr
         "produtos_perdidos": produtos_perdidos,
         "world_start": world_start, "world_end": world_end,
         "braz_start": braz_start, "braz_end": braz_end,
+        "rca_medio": rca_medio,
+        "n_produtos_com_vantagem_comparativa": n_com_vantagem,
+        "n_produtos_com_rca": int(rca_valid.shape[0]),
     }
 
 
@@ -675,13 +759,241 @@ def compute_regional_rca(comexstat_uf: pd.DataFrame, year: int) -> pd.DataFrame:
 
 
 # ==============================================================================
-# 5. SIDEBAR — UPLOAD DE ARQUIVOS E NAVEGAÇÃO (comum a todas as páginas)
+# 5. COMPONENTES VISUAIS (estilo "Radar CNI" — cartões, estatísticas, badges)
 # ==============================================================================
 
+
+def _hex_to_rgba(hex_color: str, alpha: float) -> str:
+    hex_color = hex_color.lstrip("#")
+    r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+    return f"rgba({r},{g},{b},{alpha})"
+
+
+def inject_custom_css():
+    st.markdown(
+        """
+        <style>
+        .block-container { padding-top: 2rem; padding-bottom: 3rem; }
+
+        /* ---- Big stats row (estilo "1.646 produtos monitorados") ---- */
+        .stat-row { display:flex; gap:40px; flex-wrap:wrap; margin: 4px 0 22px 0; }
+        .stat-item .stat-value { font-size:2.1rem; font-weight:800; line-height:1.15; color:#111827; }
+        .stat-item .stat-label { font-size:0.82rem; color:#6b7280; margin-top:2px; }
+
+        /* ---- Cartões de quadrante ---- */
+        .quadrant-grid { display:grid; grid-template-columns: 1fr 1fr; gap:16px; margin: 6px 0 18px 0; }
+        @media (max-width: 900px) { .quadrant-grid { grid-template-columns: 1fr; } }
+        .quadrant-card { border-radius:12px; padding:20px 24px; }
+        .quadrant-card .qc-title { font-weight:800; font-size:1.05rem; display:flex; align-items:center; gap:8px; color:#111827;}
+        .quadrant-card .qc-dot { width:10px; height:10px; border-radius:50%; display:inline-block; flex-shrink:0; }
+        .quadrant-card .qc-desc { font-size:0.80rem; color:#4b5563; margin:10px 0 2px 0; line-height:1.5; }
+        .quadrant-card .qc-bottom { display:flex; justify-content:space-between; align-items:flex-end; margin-top:20px; }
+        .quadrant-card .qc-count { font-size:2.0rem; font-weight:800; color:#111827; }
+        .quadrant-card .qc-count-label { font-size:0.76rem; color:#6b7280; }
+        .quadrant-card .qc-value { font-size:1.35rem; font-weight:800; color:#111827; text-align:right; }
+        .quadrant-card .qc-pill { display:inline-block; padding:2px 10px; border-radius:999px; font-size:0.70rem;
+            font-weight:700; margin-top:6px; }
+
+        /* ---- Barra de distribuição por quadrante ---- */
+        .dist-bar-label { font-size:0.70rem; letter-spacing:0.06em; color:#9ca3af; font-weight:700;
+            text-transform:uppercase; margin-bottom:6px; }
+        .dist-bar { display:flex; height:9px; border-radius:6px; overflow:hidden; margin: 0 0 22px 0; background:#eee; }
+
+        /* ---- Badge de quadrante (usado em tabelas/listas) ---- */
+        .quad-badge { display:inline-flex; align-items:center; gap:6px; font-size:0.78rem; font-weight:700;
+            white-space:nowrap; }
+        .quad-badge .qc-dot { width:8px; height:8px; border-radius:50%; display:inline-block; }
+
+        /* ---- Tabela estilo "Visão Estratégica" ---- */
+        .cni-table { width:100%; border-collapse:collapse; font-size:0.85rem; }
+        .cni-table th { text-align:left; font-size:0.72rem; color:#6b7280; text-transform:uppercase;
+            letter-spacing:0.03em; padding:8px 10px; border-bottom:2px solid #e5e7eb; }
+        .cni-table td { padding:9px 10px; border-bottom:1px solid #f0f0f0; vertical-align:middle; }
+        .cni-table tr:hover td { background:#fafafa; }
+        .cni-table .sector-name { font-weight:700; color:#111827; }
+        .cni-table .sector-sub { font-size:0.72rem; color:#9ca3af; }
+        .cni-table .pct-cell { font-weight:700; }
+
+        /* ---- Painel "produtos mais impactados" ---- */
+        .impact-card { border-bottom:1px solid #f0f0f0; padding:12px 4px; }
+        .impact-card .impact-name { font-weight:700; font-size:0.86rem; color:#111827; line-height:1.3; }
+        .impact-card .impact-meta { font-size:0.72rem; color:#9ca3af; margin-top:2px; }
+        .impact-card .impact-value { font-weight:800; font-size:0.95rem; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_stat_row(items: list[tuple[str, str]]):
+    """items: lista de (valor_grande, rótulo)."""
+    html = '<div class="stat-row">'
+    for value, label in items:
+        html += (
+            '<div class="stat-item">'
+            f'<div class="stat-value">{value}</div>'
+            f'<div class="stat-label">{label}</div>'
+            "</div>"
+        )
+    html += "</div>"
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def render_quad_badge(quadrant: str) -> str:
+    color = QUADRANT_COLORS.get(quadrant, "#bdbdbd")
+    label = QUADRANT_SHORT.get(quadrant, quadrant)
+    return (
+        f'<span class="quad-badge" style="color:{color};">'
+        f'<span class="qc-dot" style="background:{color};"></span>{label}</span>'
+    )
+
+
+def render_quadrant_cards(quadrant_list: list, counts: dict, values: dict, total_value: float,
+                           descriptions: dict):
+    """Grade 2x2 (ou Nx1) de cartões de quadrante, no estilo do Radar CNI."""
+    html = '<div class="quadrant-grid">'
+    for q in quadrant_list:
+        color = QUADRANT_COLORS.get(q, "#bdbdbd")
+        bg = _hex_to_rgba(color, 0.08)
+        pill_bg = _hex_to_rgba(color, 0.16)
+        n = int(counts.get(q, 0))
+        val = values.get(q, 0.0)
+        pct = (val / total_value) if total_value else np.nan
+        desc_lines = descriptions.get(q, [])
+        desc_html = "".join(f"<div>{d}</div>" for d in desc_lines)
+        html += (
+            f'<div class="quadrant-card" style="background:{bg};">'
+            f'<div class="qc-title"><span class="qc-dot" style="background:{color};"></span>{QUADRANT_SHORT.get(q, q)}</div>'
+            f'<div class="qc-desc">{desc_html}</div>'
+            '<div class="qc-bottom">'
+            f'<div><div class="qc-count">{n}</div><div class="qc-count-label">produtos</div></div>'
+            '<div>'
+            f'<div class="qc-value">{format_usd(val)}</div>'
+            f'<div class="qc-pill" style="background:{pill_bg}; color:{color};">{format_pct(pct)} do mercado</div>'
+            "</div>"
+            "</div>"
+            "</div>"
+        )
+    html += "</div>"
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def render_distribution_bar(quadrant_list: list, values: dict, total_value: float, label="DISTRIBUIÇÃO DO MERCADO POR QUADRANTE"):
+    if not total_value:
+        return
+    html = f'<div class="dist-bar-label">{label}</div><div class="dist-bar">'
+    for q in quadrant_list:
+        color = QUADRANT_COLORS.get(q, "#bdbdbd")
+        val = values.get(q, 0.0)
+        pct = (val / total_value * 100) if total_value else 0
+        if pct <= 0:
+            continue
+        html += f'<div style="width:{pct:.3f}%; background:{color};" title="{QUADRANT_SHORT.get(q, q)}: {pct:.1f}%"></div>'
+    html += "</div>"
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def render_nav_cards(cards: list[dict], nav_key: str):
+    """cards: [{'icon':'📋','title':'...', 'target': '📋 Tabela Completa (SH6)'}]"""
+    cols = st.columns(len(cards))
+    for col, card in zip(cols, cards):
+        with col:
+            with st.container(border=True):
+                c1, c2 = st.columns([5, 1])
+                c1.markdown(f"**{card['icon']} {card['title']}**")
+                if c2.button("→", key=f"navcard_{card['target']}", use_container_width=True):
+                    st.session_state[nav_key] = card["target"]
+                    st.rerun()
+
+
+def build_isic_quadrant_table(comexstat: pd.DataFrame, product_metrics: pd.DataFrame,
+                               cod_col: str, desc_col: str, year, quadrant_list: list) -> pd.DataFrame:
+    """Monta a tabela 'Setor × % de mercado por quadrante' no estilo Visão Estratégica."""
+    base = comexstat[comexstat["ano"] == year] if year is not None else comexstat
+    merged = base.merge(product_metrics[["sh6", "quadrante"]], left_on="sh6_cod", right_on="sh6", how="left")
+    merged["quadrante"] = merged["quadrante"].fillna("Sem dados suficientes")
+
+    rows = []
+    for (cod, desc), g in merged.groupby([cod_col, desc_col]):
+        total = g["valor_fob"].sum()
+        row = {"cod": cod, "desc": desc, "mercado_total": total, "n_produtos": g["sh6_cod"].nunique()}
+        for q in quadrant_list:
+            val = g.loc[g["quadrante"] == q, "valor_fob"].sum()
+            row[q] = (val / total) if total else np.nan
+        rows.append(row)
+    return pd.DataFrame(rows).sort_values("mercado_total", ascending=False)
+
+
+def render_cni_style_table(df: pd.DataFrame, quadrant_list: list, height_rows: int = 12):
+    """Renderiza a tabela setor × quadrante como HTML, com pontos coloridos e %."""
+    if df.empty:
+        st.info("Sem dados para exibir.")
+        return
+    html = '<table class="cni-table"><thead><tr>'
+    html += '<th>Setor</th>'
+    for q in quadrant_list:
+        html += f'<th>{QUADRANT_SHORT.get(q, q)}</th>'
+    html += '<th>Mercado total</th></tr></thead><tbody>'
+    for _, r in df.head(height_rows).iterrows():
+        html += "<tr>"
+        html += (
+            f'<td><div class="sector-name">{r["cod"]} — {r["desc"]}</div>'
+            f'<div class="sector-sub">{int(r["n_produtos"])} produtos</div></td>'
+        )
+        for q in quadrant_list:
+            color = QUADRANT_COLORS.get(q, "#bdbdbd")
+            pct = r.get(q, np.nan)
+            pct_str = format_pct(pct) if pd.notna(pct) else "—"
+            html += (
+                f'<td class="pct-cell" style="color:{color};">'
+                f'<span class="qc-dot" style="background:{color}; width:8px;height:8px;'
+                f'border-radius:50%; display:inline-block; margin-right:6px;"></span>{pct_str}</td>'
+            )
+        html += f'<td>{format_usd(r["mercado_total"])}</td>'
+        html += "</tr>"
+    html += "</tbody></table>"
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def render_impact_products(products_df: pd.DataFrame, value_col: str, value_label: str,
+                            market_col: str, code_col: str = "sh6", desc_col: str = "sh6_desc",
+                            n: int = 10, value_is_currency: bool = True):
+    """Painel 'Produtos mais impactados' (lista de cartões), estilo CNI."""
+    if products_df.empty:
+        st.info("Sem produtos para exibir neste recorte.")
+        return
+    for _, r in products_df.head(n).iterrows():
+        badge = render_quad_badge(r.get("quadrante", "Sem dados suficientes"))
+        val = r[value_col]
+        val_color = "#d73027" if pd.notna(val) and val < 0 else "#1a9850"
+        val_str = format_usd(val) if value_is_currency else format_num(val, 2)
+        st.markdown(
+            f'<div class="impact-card">'
+            f'<div class="impact-name">{r[desc_col]}</div>'
+            f'<div class="impact-meta">SH6 {r[code_col]} · {badge}</div>'
+            f'<div style="display:flex; justify-content:space-between; align-items:baseline; margin-top:6px;">'
+            f'<span class="impact-value" style="color:{val_color};">{value_label}: {val_str}</span>'
+            f'<span class="impact-meta">Mercado: {format_usd(r[market_col])}</span>'
+            f'</div></div>',
+            unsafe_allow_html=True,
+        )
+
+
+# ==============================================================================
+# 6. SIDEBAR — UPLOAD DE ARQUIVOS E NAVEGAÇÃO (comum a todas as páginas)
+# ==============================================================================
+
+inject_custom_css()
+
 st.sidebar.title("🌎 Navegação")
+NAV_KEY = "nav_page_radio"
+_PAGE_OPTIONS = ["📊 Dashboard Resumo", "📋 Tabela Completa (SH6)", "📦 CUCI Grupo", "🗺️ Análise por Estado"]
+if NAV_KEY not in st.session_state:
+    st.session_state[NAV_KEY] = _PAGE_OPTIONS[0]
 PAGE = st.sidebar.radio(
     "Selecione a página",
-    ["📊 Dashboard Resumo", "📋 Tabela Completa (SH6)", "📦 CUCI Grupo", "🗺️ Análise por Estado"],
+    _PAGE_OPTIONS,
+    key=NAV_KEY,
     label_visibility="collapsed",
 )
 
@@ -870,25 +1182,38 @@ has_comexstat_uf = "comexstat_uf" in st.session_state
 if has_comtrade:
     tidy = st.session_state["comtrade_tidy"]
     anos_disponiveis = sorted(tidy["ano"].dropna().unique().astype(int).tolist())
+    st.sidebar.divider()
+    st.sidebar.subheader("📅 Período de análise")
+
     if len(anos_disponiveis) >= 2:
-        st.sidebar.divider()
-        st.sidebar.subheader("📅 Período de análise")
         start_year = st.sidebar.selectbox("Ano inicial", anos_disponiveis, index=0)
         end_years = [a for a in anos_disponiveis if a > start_year]
         end_year = st.sidebar.selectbox("Ano final", end_years, index=len(end_years) - 1) if end_years else None
-
-        if end_year:
-            cache_key = (start_year, end_year, id(tidy))
-            if st.session_state.get("_metrics_cache_key") != cache_key:
-                product_metrics = compute_product_metrics(tidy, start_year, end_year)
-                kpis = compute_summary_kpis(product_metrics, tidy, start_year, end_year)
-                st.session_state["product_metrics"] = product_metrics
-                st.session_state["kpis"] = kpis
-                st.session_state["_metrics_cache_key"] = cache_key
-            st.session_state["start_year"] = start_year
-            st.session_state["end_year"] = end_year
+    elif len(anos_disponiveis) == 1:
+        # Apenas 1 ano no Comtrade: ainda assim calculamos o RCA (Balassa) de
+        # nível para esse ano — apenas CAGR mundial e variação de RCA (que
+        # exigem 2 pontos no tempo) ficam indisponíveis.
+        start_year = end_year = anos_disponiveis[0]
+        st.sidebar.info(
+            f"Apenas o ano **{start_year}** disponível no Comtrade. O RCA será "
+            "calculado normalmente para esse ano; CAGR mundial e variação de "
+            "RCA (tendência) exigem pelo menos 2 anos."
+        )
     else:
-        st.sidebar.warning("A base Comtrade precisa ter pelo menos 2 anos distintos.")
+        start_year = end_year = None
+        st.sidebar.warning("Nenhum ano válido encontrado na base Comtrade.")
+
+    if start_year is not None and end_year is not None:
+        cache_key = (start_year, end_year, id(tidy))
+        if st.session_state.get("_metrics_cache_key") != cache_key:
+            product_metrics = compute_product_metrics(tidy, start_year, end_year)
+            kpis = compute_summary_kpis(product_metrics, tidy, start_year, end_year)
+            st.session_state["product_metrics"] = product_metrics
+            st.session_state["kpis"] = kpis
+            st.session_state["_metrics_cache_key"] = cache_key
+        st.session_state["start_year"] = start_year
+        st.session_state["end_year"] = end_year
+        st.session_state["single_year_mode"] = (start_year == end_year)
 
 product_metrics = st.session_state.get("product_metrics")
 kpis = st.session_state.get("kpis")
@@ -902,7 +1227,7 @@ end_year = st.session_state.get("end_year")
 
 
 def page_dashboard():
-    st.title("🌎 Sistema de Análise de Diversificação das Exportações Brasileiras")
+    st.title("🌎 Radar da Diversificação das Exportações Brasileiras")
     st.caption(
         "Combine dados de importação mundial/Brasil (UN Comtrade, nível SH6) com dados de "
         "exportação do Brasil (Comexstat) para identificar oportunidades e ameaças competitivas."
@@ -915,93 +1240,161 @@ def page_dashboard():
         )
         return
 
-    st.header("📊 Dashboard Resumo")
+    single_year_mode = bool(kpis and kpis.get("single_year_mode"))
+    active_quadrants = SINGLE_YEAR_QUADRANTS if single_year_mode else QUADRANT_ORDER
 
-    # ---------------- KPIs principais ----------------
+    # ---------------- Faixa de referência do período ----------------
+    if start_year is not None and end_year is not None:
+        periodo_label = f"Ano de referência: **{start_year}**" if single_year_mode else f"Período: **{start_year} → {end_year}**"
+        st.caption(f"📅 {periodo_label} (Comtrade)")
+
+    # ---------------- Stat row (grandes números, estilo CNI) ----------------
+    n_sh6_monitorados = int(product_metrics["sh6"].nunique()) if product_metrics is not None else (
+        int(st.session_state["comexstat"]["sh6_cod"].nunique()) if has_comexstat else 0
+    )
+    n_sh6_exportados = int(kpis["n_produtos_fim"]) if kpis else 0
+    mercado_total = float(product_metrics["mundo_fim"].fillna(0).sum()) if product_metrics is not None else np.nan
+
+    stat_items = [(f"{n_sh6_monitorados:,}".replace(",", "."), "produtos SH6 monitorados (Comtrade)")]
     if kpis:
-        k1, k2, k3, k4 = st.columns(4)
-        k1.metric("CAGR Mundial (período)", format_pct(kpis["cagr_mundo"]))
-        delta_kpi = None
-        if pd.notna(kpis["cagr_brasil"]) and pd.notna(kpis["cagr_mundo"]):
-            delta_kpi = format_pct(kpis["cagr_brasil"] - kpis["cagr_mundo"])
-        k2.metric("CAGR do Brasil (período)", format_pct(kpis["cagr_brasil"]), delta=delta_kpi)
+        stat_items.append((f"{n_sh6_exportados:,}".replace(",", "."), "SH6 exportados pelo Brasil"))
+    if pd.notna(mercado_total) and mercado_total > 0:
+        stat_items.append((format_usd(mercado_total), "mercado mundial monitorado"))
+    render_stat_row(stat_items)
 
-        if kpis["brasil_cresceu_mais_que_mundo"] is True:
-            k3.metric("Brasil vs. Mundo", "✅ Cresceu mais")
-        elif kpis["brasil_cresceu_mais_que_mundo"] is False:
-            k3.metric("Brasil vs. Mundo", "⚠️ Cresceu menos")
+    # ---------------- KPIs de crescimento / competitividade ----------------
+    if kpis:
+        if single_year_mode:
+            st.info(
+                "ℹ️ Apenas **1 ano** de dados Comtrade disponível. O **RCA (Balassa) é calculado normalmente** "
+                "para esse ano, mas CAGR mundial, CAGR do Brasil por produto e a variação de RCA (tendência) "
+                "exigem pelo menos 2 anos e por isso não estão disponíveis."
+            )
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("Ano de referência (Comtrade)", str(start_year))
+            k2.metric("RCA médio dos produtos", format_num(kpis["rca_medio"], 2))
+            k3.metric(
+                "Produtos com Vantagem Comparativa",
+                f"{kpis['n_produtos_com_vantagem_comparativa']} / {kpis['n_produtos_com_rca']}",
+                help="Produtos com RCA ≥ 1 sobre o total de produtos com RCA calculável.",
+            )
+            k4.metric(
+                "Índice HHI (concentração)",
+                f"{kpis['hhi']:.0f}" if pd.notna(kpis["hhi"]) else "—",
+                help="Herfindahl-Hirschman das exportações brasileiras por SH6 (0–10.000). "
+                     "Quanto maior, mais concentrada/menos diversificada a pauta.",
+            )
         else:
-            k3.metric("Brasil vs. Mundo", "—")
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("CAGR Mundial (período)", format_pct(kpis["cagr_mundo"]))
+            delta_kpi = None
+            if pd.notna(kpis["cagr_brasil"]) and pd.notna(kpis["cagr_mundo"]):
+                delta_kpi = format_pct(kpis["cagr_brasil"] - kpis["cagr_mundo"])
+            k2.metric("CAGR do Brasil (período)", format_pct(kpis["cagr_brasil"]), delta=delta_kpi)
 
-        k4.metric(
-            "Índice HHI (concentração)",
-            f"{kpis['hhi']:.0f}" if pd.notna(kpis["hhi"]) else "—",
-            help="Herfindahl-Hirschman das exportações brasileiras por SH6 no ano final (0–10.000). "
-                 "Quanto maior, mais concentrada/menos diversificada a pauta.",
-        )
+            if kpis["brasil_cresceu_mais_que_mundo"] is True:
+                k3.metric("Brasil vs. Mundo", "✅ Cresceu mais")
+            elif kpis["brasil_cresceu_mais_que_mundo"] is False:
+                k3.metric("Brasil vs. Mundo", "⚠️ Cresceu menos")
+            else:
+                k3.metric("Brasil vs. Mundo", "—")
 
-        k5, k6, k7, k8 = st.columns(4)
-        k5.metric("Produtos SH6 exportados (início)", kpis["n_produtos_inicio"])
-        k6.metric("Produtos SH6 exportados (fim)", kpis["n_produtos_fim"])
-        k7.metric("Novos produtos no período", kpis["produtos_novos"])
-        k8.metric("Produtos perdidos no período", kpis["produtos_perdidos"])
+            k4.metric(
+                "Índice HHI (concentração)",
+                f"{kpis['hhi']:.0f}" if pd.notna(kpis["hhi"]) else "—",
+                help="Herfindahl-Hirschman das exportações brasileiras por SH6 no ano final (0–10.000). "
+                     "Quanto maior, mais concentrada/menos diversificada a pauta.",
+            )
+
+            k5, k6, k7, k8 = st.columns(4)
+            k5.metric("Produtos SH6 exportados (início)", kpis["n_produtos_inicio"])
+            k6.metric("Produtos SH6 exportados (fim)", kpis["n_produtos_fim"])
+            k7.metric("Novos produtos no período", kpis["produtos_novos"])
+            k8.metric("Produtos perdidos no período", kpis["produtos_perdidos"])
     else:
         st.warning("Envie e processe o arquivo Comtrade (barra lateral) para ver RCA, CAGR e quadrantes.")
 
     st.divider()
 
-    # ---------------- Quadrantes ----------------
+    # ---------------- Cartões de quadrante + barra de distribuição (estilo CNI) ----------------
     if product_metrics is not None and not product_metrics.empty:
-        st.subheader("🧭 Oportunidades do Brasil por quadrante (RCA × Crescimento do mercado mundial)")
-        st.caption(
-            "Eixo X = CAGR do mercado mundial do produto (SH6) no período · "
-            "Eixo Y = variação do RCA do Brasil no produto (ganho/perda de espaço competitivo)."
+        if single_year_mode:
+            st.subheader("🧭 Produtos do Brasil por nível de RCA")
+            st.caption("Classificação baseada apenas no nível do RCA (Balassa) no ano disponível — sem tendência.")
+        else:
+            st.subheader("🧭 Oportunidades do Brasil por quadrante (RCA × Crescimento do mercado mundial)")
+            st.caption(
+                "Cada cartão mostra quantos produtos SH6 estão no quadrante e quanto isso representa do "
+                "valor total exportado pelo Brasil no ano final do período."
+            )
+
+        counts = product_metrics["quadrante"].value_counts().to_dict()
+        values = {
+            q: float(product_metrics.loc[product_metrics["quadrante"] == q, "brasil_fim"].fillna(0).sum())
+            for q in active_quadrants
+        }
+        total_value = float(product_metrics["brasil_fim"].fillna(0).sum())
+
+        render_quadrant_cards(active_quadrants, counts, values, total_value, QUADRANT_DESCRIPTIONS)
+        render_distribution_bar(active_quadrants, values, total_value)
+
+        # ---- Navegação rápida (estilo cartões "Explorar setores" / "Visão Estratégica") ----
+        render_nav_cards(
+            [
+                {"icon": "📋", "title": "Explorar produtos (Tabela Completa)", "target": "📋 Tabela Completa (SH6)"},
+                {"icon": "📦", "title": "Explorar por CUCI Grupo", "target": "📦 CUCI Grupo"},
+                {"icon": "🗺️", "title": "Ver exportações por Estado", "target": "🗺️ Análise por Estado"},
+            ],
+            NAV_KEY,
         )
 
-        qc = product_metrics["quadrante"].value_counts().reindex(
-            QUADRANT_ORDER + ["Sem dados suficientes"]
-        ).fillna(0).astype(int)
-        cols = st.columns(4)
-        for i, q in enumerate(QUADRANT_ORDER):
-            with cols[i]:
-                st.metric(QUADRANT_SHORT[q], int(qc.get(q, 0)))
+        st.divider()
 
-        plot_df = product_metrics.dropna(subset=["cagr_mundo", "var_rca"]).copy()
-        if plot_df.empty:
-            st.info("Não há produtos com CAGR mundial e variação de RCA calculáveis no período selecionado.")
+        # ---- Detalhamento por produto (dispersão RCA x CAGR mundial) ----
+        if not single_year_mode:
+            with st.expander("🔬 Detalhamento por produto (dispersão RCA × CAGR mundial)", expanded=False):
+                plot_df = product_metrics.dropna(subset=["cagr_mundo", "var_rca"]).copy()
+                if plot_df.empty:
+                    st.info("Não há produtos com CAGR mundial e variação de RCA calculáveis no período selecionado.")
+                else:
+                    plot_df["valor_bolha"] = plot_df["brasil_fim"].fillna(0).clip(lower=0)
+                    fig = px.scatter(
+                        plot_df, x="cagr_mundo", y="var_rca", color="quadrante",
+                        size="valor_bolha", size_max=45, hover_name="sh6_desc",
+                        hover_data={"sh6": True, "cagr_mundo": ":.1%", "var_rca": ":.2f", "valor_bolha": ":,.0f"},
+                        color_discrete_map=QUADRANT_COLORS,
+                        labels={"cagr_mundo": "CAGR do mercado mundial", "var_rca": "Variação do RCA"},
+                    )
+                    fig.add_hline(y=0, line_dash="dash", line_color="gray")
+                    fig.add_vline(x=0, line_dash="dash", line_color="gray")
+                    fig.update_layout(xaxis_tickformat=".0%", height=480, legend_title="Quadrante")
+                    st.plotly_chart(fig, use_container_width=True)
         else:
-            plot_df["valor_bolha"] = plot_df["brasil_fim"].fillna(0).clip(lower=0)
-            fig = px.scatter(
-                plot_df, x="cagr_mundo", y="var_rca", color="quadrante",
-                size="valor_bolha", size_max=45, hover_name="sh6_desc",
-                hover_data={"sh6": True, "cagr_mundo": ":.1%", "var_rca": ":.2f", "valor_bolha": ":,.0f"},
-                color_discrete_map=QUADRANT_COLORS,
-                labels={"cagr_mundo": "CAGR do mercado mundial", "var_rca": "Variação do RCA"},
-            )
-            fig.add_hline(y=0, line_dash="dash", line_color="gray")
-            fig.add_vline(x=0, line_dash="dash", line_color="gray")
-            fig.update_layout(xaxis_tickformat=".0%", height=520, legend_title="Quadrante")
-            st.plotly_chart(fig, use_container_width=True)
-
-        with st.expander("Ver contagem e valor exportado por quadrante"):
-            summary_q = product_metrics.groupby("quadrante").agg(
-                n_produtos=("sh6", "count"),
-                valor_exportado_fim=("brasil_fim", "sum"),
-            ).reindex(QUADRANT_ORDER).reset_index()
-            summary_q["valor_exportado_fim"] = summary_q["valor_exportado_fim"].apply(format_usd)
-            st.dataframe(summary_q, use_container_width=True, hide_index=True)
+            with st.expander("🔬 Detalhamento por produto (ranking de RCA)", expanded=False):
+                rank_rca = product_metrics.dropna(subset=["rca_fim"]).sort_values("rca_fim", ascending=False).head(25)
+                if rank_rca.empty:
+                    st.info("Não há RCA calculável para os produtos no ano selecionado.")
+                else:
+                    fig_rca = px.bar(
+                        rank_rca, x="rca_fim", y="sh6_desc", orientation="h", color="quadrante",
+                        color_discrete_map=QUADRANT_COLORS, hover_data={"sh6": True, "rca_fim": ":.2f"},
+                    )
+                    fig_rca.add_vline(x=1, line_dash="dash", line_color="gray")
+                    fig_rca.update_layout(yaxis={"categoryorder": "total ascending"}, yaxis_title="",
+                                           xaxis_title="RCA (Balassa)", height=600, legend_title="Quadrante")
+                    st.plotly_chart(fig_rca, use_container_width=True)
 
     st.divider()
 
-    # ---------------- ISIC Divisão / Seção — potenciais e ameaças ----------------
+    # ---------------- ISIC Divisão / Seção — Visão Estratégica (estilo CNI) ----------------
     if has_comexstat and product_metrics is not None:
-        st.subheader("🏭 Áreas com maior potencial e maior ameaça (ISIC)")
+        st.subheader("🏭 Visão Estratégica da Indústria — participação de mercado por quadrante (ISIC)")
+        st.caption(
+            "% por quadrante = participação no valor exportado do setor pelo Brasil (não na quantidade de produtos)."
+        )
 
         comexstat = st.session_state["comexstat"]
         base_isic = comexstat[comexstat["ano"] == end_year] if end_year else comexstat
-
-        merge_cols = ["sh6", "var_rca", "cagr_mundo", "quadrante"]
-        merged = base_isic.merge(product_metrics[merge_cols], left_on="sh6_cod", right_on="sh6", how="left")
 
         tab1, tab2 = st.tabs(["Por ISIC Divisão", "Por ISIC Seção"])
 
@@ -1010,40 +1403,40 @@ def page_dashboard():
             (tab2, "isic_sec_cod", "isic_sec_desc", "ISIC Seção"),
         ]:
             with tab:
-                if desc_col not in merged.columns:
+                if desc_col not in base_isic.columns:
                     st.info(f"Coluna de {label} não encontrada no arquivo Comexstat.")
                     continue
-                agg = merged.groupby([cod_col, desc_col]).agg(
-                    valor_exportado=("valor_fob", "sum"),
-                    cagr_mundo_medio=("cagr_mundo", "mean"),
-                    var_rca_media=("var_rca", "mean"),
-                    estrelas=("quadrante", lambda s: (s == QUADRANT_ORDER[0]).sum()),
-                    ameacas=("quadrante", lambda s: (s == QUADRANT_ORDER[3]).sum()),
-                ).reset_index().sort_values("valor_exportado", ascending=False)
 
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.markdown("**🟢 Maior potencial** (mais produtos 'Estrela')")
-                    top_pot = agg.sort_values("estrelas", ascending=False).head(8)
-                    fig_pot = px.bar(top_pot, x="estrelas", y=desc_col, orientation="h",
-                                      color_discrete_sequence=["#1a9850"])
-                    fig_pot.update_layout(yaxis_title="", xaxis_title="Nº de produtos 'Estrela'", height=400,
-                                           yaxis={"categoryorder": "total ascending"})
-                    st.plotly_chart(fig_pot, use_container_width=True)
-                with c2:
-                    st.markdown("**🔴 Maior ameaça** (mais produtos em declínio)")
-                    top_ame = agg.sort_values("ameacas", ascending=False).head(8)
-                    fig_ame = px.bar(top_ame, x="ameacas", y=desc_col, orientation="h",
-                                      color_discrete_sequence=["#d73027"])
-                    fig_ame.update_layout(yaxis_title="", xaxis_title="Nº de produtos em ameaça", height=400,
-                                           yaxis={"categoryorder": "total ascending"})
-                    st.plotly_chart(fig_ame, use_container_width=True)
+                isic_table = build_isic_quadrant_table(base_isic, product_metrics, cod_col, desc_col, None, active_quadrants)
+                if isic_table.empty:
+                    st.info("Sem dados suficientes para este recorte.")
+                    continue
 
-                with st.expander(f"Tabela completa por {label}"):
-                    show = agg.copy()
-                    show["valor_exportado"] = show["valor_exportado"].apply(format_usd)
-                    show["cagr_mundo_medio"] = show["cagr_mundo_medio"].apply(format_pct)
-                    st.dataframe(show, use_container_width=True, hide_index=True)
+                col_table, col_impact = st.columns([2, 1])
+                with col_table:
+                    render_cni_style_table(isic_table, active_quadrants, height_rows=15)
+
+                with col_impact:
+                    sector_options = [f"{r['cod']} — {r['desc']}" for _, r in isic_table.iterrows()]
+                    sel = st.selectbox(f"Setor ({label})", sector_options, key=f"sel_{label}")
+                    sel_desc = sel.split(" — ", 1)[1] if " — " in sel else sel
+
+                    merged_products = base_isic[base_isic[desc_col] == sel_desc].merge(
+                        product_metrics, left_on="sh6_cod", right_on="sh6", how="left", suffixes=("", "_pm")
+                    )
+                    merged_products = merged_products.drop_duplicates(subset=["sh6_cod"])
+
+                    if single_year_mode:
+                        st.markdown(f"**Produtos com menor RCA em '{sel_desc}'**")
+                        worst = merged_products.dropna(subset=["rca_fim"]).sort_values("rca_fim").head(10)
+                        render_impact_products(worst, value_col="rca_fim", value_label="RCA", market_col="mundo_fim",
+                                                code_col="sh6_cod", desc_col="sh6_desc", value_is_currency=False)
+                    else:
+                        st.markdown(f"**Produtos mais impactados em '{sel_desc}'**")
+                        merged_products["perda"] = merged_products["brasil_fim"] - merged_products["brasil_inicio"]
+                        impacted = merged_products.dropna(subset=["perda"]).sort_values("perda").head(10)
+                        render_impact_products(impacted, value_col="perda", value_label="Perda estimada", market_col="mundo_fim",
+                                                code_col="sh6_cod", desc_col="sh6_desc")
 
     st.divider()
 
@@ -1052,22 +1445,40 @@ def page_dashboard():
 
     colA, colB = st.columns(2)
     if product_metrics is not None:
-        with colA:
-            st.markdown("**Top 10 produtos com maior ganho de RCA**")
-            top_gain = product_metrics.dropna(subset=["var_rca"]).sort_values("var_rca", ascending=False).head(10)
-            st.dataframe(
-                top_gain[["sh6", "sh6_desc", "rca_inicio", "rca_fim", "var_rca", "cagr_mundo"]]
-                .rename(columns={"sh6_desc": "Produto (SH6)"}),
-                use_container_width=True, hide_index=True,
-            )
-        with colB:
-            st.markdown("**Top 10 produtos com maior perda de RCA**")
-            top_loss = product_metrics.dropna(subset=["var_rca"]).sort_values("var_rca", ascending=True).head(10)
-            st.dataframe(
-                top_loss[["sh6", "sh6_desc", "rca_inicio", "rca_fim", "var_rca", "cagr_mundo"]]
-                .rename(columns={"sh6_desc": "Produto (SH6)"}),
-                use_container_width=True, hide_index=True,
-            )
+        if single_year_mode:
+            with colA:
+                st.markdown("**Top 10 produtos com maior RCA**")
+                top_gain = product_metrics.dropna(subset=["rca_fim"]).sort_values("rca_fim", ascending=False).head(10)
+                st.dataframe(
+                    top_gain[["sh6", "sh6_desc", "rca_fim", "mundo_fim", "brasil_fim"]]
+                    .rename(columns={"sh6_desc": "Produto (SH6)"}),
+                    use_container_width=True, hide_index=True,
+                )
+            with colB:
+                st.markdown("**Top 10 produtos com menor RCA**")
+                top_loss = product_metrics.dropna(subset=["rca_fim"]).sort_values("rca_fim", ascending=True).head(10)
+                st.dataframe(
+                    top_loss[["sh6", "sh6_desc", "rca_fim", "mundo_fim", "brasil_fim"]]
+                    .rename(columns={"sh6_desc": "Produto (SH6)"}),
+                    use_container_width=True, hide_index=True,
+                )
+        else:
+            with colA:
+                st.markdown("**Top 10 produtos com maior ganho de RCA**")
+                top_gain = product_metrics.dropna(subset=["var_rca"]).sort_values("var_rca", ascending=False).head(10)
+                st.dataframe(
+                    top_gain[["sh6", "sh6_desc", "rca_inicio", "rca_fim", "var_rca", "cagr_mundo"]]
+                    .rename(columns={"sh6_desc": "Produto (SH6)"}),
+                    use_container_width=True, hide_index=True,
+                )
+            with colB:
+                st.markdown("**Top 10 produtos com maior perda de RCA**")
+                top_loss = product_metrics.dropna(subset=["var_rca"]).sort_values("var_rca", ascending=True).head(10)
+                st.dataframe(
+                    top_loss[["sh6", "sh6_desc", "rca_inicio", "rca_fim", "var_rca", "cagr_mundo"]]
+                    .rename(columns={"sh6_desc": "Produto (SH6)"}),
+                    use_container_width=True, hide_index=True,
+                )
 
     if has_comexstat:
         comexstat = st.session_state["comexstat"]
@@ -1089,7 +1500,7 @@ def page_dashboard():
                                       yaxis={"categoryorder": "total ascending"})
             st.plotly_chart(fig_paises, use_container_width=True)
 
-    st.caption("➡️ Use o menu lateral para navegar até **Tabela Completa**, **CUCI Grupo** e **Análise por Estado**.")
+    st.caption("➡️ Use o menu lateral (ou os cartões acima) para navegar entre as páginas do sistema.")
 
 
 # ==============================================================================
@@ -1315,9 +1726,11 @@ def page_cuci_grupo():
 
     if product_metrics is not None and "quadrante" in sh6_list.columns:
         st.markdown("**Distribuição dos SH6 do grupo por quadrante**")
-        qc = sh6_list["quadrante"].value_counts().reindex(QUADRANT_ORDER).fillna(0).reset_index()
+        active_q = SINGLE_YEAR_QUADRANTS if st.session_state.get("single_year_mode") else QUADRANT_ORDER
+        qc = sh6_list["quadrante"].value_counts().reindex(active_q).fillna(0).reset_index()
         qc.columns = ["quadrante", "n"]
-        fig_q = px.bar(qc, x="quadrante", y="n", color="quadrante", color_discrete_map=QUADRANT_COLORS)
+        qc["quadrante_curto"] = qc["quadrante"].map(QUADRANT_SHORT)
+        fig_q = px.bar(qc, x="quadrante_curto", y="n", color="quadrante", color_discrete_map=QUADRANT_COLORS)
         fig_q.update_layout(showlegend=False, xaxis_title="", yaxis_title="Nº de produtos SH6")
         st.plotly_chart(fig_q, use_container_width=True)
 
