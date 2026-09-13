@@ -695,6 +695,11 @@ def compute_summary_kpis(product_metrics: pd.DataFrame, comtrade_tidy: pd.DataFr
     else:
         hhi = np.nan
 
+    # Número efetivo de produtos: inverso do HHI normalizado (0-1), mais
+    # intuitivo que o HHI bruto — responde "a pauta se comporta como se
+    # tivesse N produtos igualmente importantes?"
+    n_efetivo = float(10000.0 / hhi) if pd.notna(hhi) and hhi > 0 else np.nan
+
     n_produtos_exportados_fim = int((product_metrics["brasil_fim"].fillna(0) > 0).sum())
     n_produtos_exportados_inicio = int((product_metrics["brasil_inicio"].fillna(0) > 0).sum())
     novos_produtos = int(((product_metrics["brasil_inicio"].fillna(0) == 0) &
@@ -723,6 +728,7 @@ def compute_summary_kpis(product_metrics: pd.DataFrame, comtrade_tidy: pd.DataFr
         "rca_medio": rca_medio,
         "n_produtos_com_vantagem_comparativa": n_com_vantagem,
         "n_produtos_com_rca": int(rca_valid.shape[0]),
+        "n_efetivo": n_efetivo,
     }
 
 
@@ -756,6 +762,87 @@ def compute_regional_rca(comexstat_uf: pd.DataFrame, year: int) -> pd.DataFrame:
         df["exp_brasil_produto"] / df["exp_brasil_total"]
     )
     return df
+
+
+def compute_geographic_diversification(comexstat: pd.DataFrame, year: int) -> pd.DataFrame:
+    """
+    Para cada SH6, mede a concentração dos mercados COMPRADORES (países de
+    destino) das exportações brasileiras naquele ano — calculado inteiramente
+    a partir do Comexstat (coluna País), sem depender do Comtrade:
+
+        hhi_destino = soma((valor_pais / valor_total_produto)^2) * 10.000
+        n_paises_destino = nº de países que compraram o produto no ano
+
+    Produtos com HHI de destino alto (próximo de 10.000) e poucos países
+    dependem fortemente de um único comprador — um risco de concentração de
+    mercado distinto (e complementar) da concentração de produtos medida
+    pelo HHI de pauta exportadora.
+    """
+    base = comexstat[comexstat["ano"] == year]
+    if base.empty or "pais" not in base.columns:
+        return pd.DataFrame()
+
+    rows = []
+    group_cols = ["sh6_cod"] + (["sh6_desc"] if "sh6_desc" in base.columns else [])
+    for key, g in base.groupby(group_cols):
+        cod = key[0] if isinstance(key, tuple) else key
+        desc = key[1] if isinstance(key, tuple) and len(key) > 1 else cod
+        by_country = g.groupby("pais")["valor_fob"].sum().sort_values(ascending=False)
+        total = by_country.sum()
+        if total <= 0:
+            continue
+        shares = by_country / total
+        hhi_dest = float((shares ** 2).sum() * 10000)
+        n_paises = int((by_country > 0).sum())
+        rows.append({
+            "sh6_cod": cod, "sh6_desc": desc, "valor_total": float(total),
+            "n_paises_destino": n_paises, "hhi_destino": hhi_dest,
+            "pais_principal": by_country.index[0], "pct_pais_principal": float(shares.iloc[0]),
+        })
+    return pd.DataFrame(rows).sort_values("valor_total", ascending=False)
+
+
+def compute_growth_decomposition(product_metrics: pd.DataFrame) -> dict:
+    """
+    Decompõe a variação total das exportações do Brasil (brasil_fim - brasil_inicio,
+    somado sobre todos os SH6) em três componentes clássicos da literatura de
+    comércio internacional:
+
+    - Margem intensiva (produtos existentes): variação de valor nos produtos
+      exportados tanto no início quanto no fim do período.
+    - Margem extensiva positiva (produtos novos): valor exportado no fim por
+      produtos que não eram exportados no início (entrada de novos produtos).
+    - Margem extensiva negativa (produtos perdidos): valor que deixou de ser
+      exportado por produtos que saíram da pauta.
+
+    Requer dois anos de dados (não aplicável em modo de 1 ano).
+    """
+    if product_metrics is None or product_metrics.empty:
+        return {}
+    if "brasil_inicio" not in product_metrics.columns or "brasil_fim" not in product_metrics.columns:
+        return {}
+
+    bi = product_metrics["brasil_inicio"].fillna(0)
+    bf = product_metrics["brasil_fim"].fillna(0)
+
+    existentes_mask = (bi > 0) & (bf > 0)
+    novos_mask = (bi == 0) & (bf > 0)
+    perdidos_mask = (bi > 0) & (bf == 0)
+
+    contrib_existentes = float((bf[existentes_mask] - bi[existentes_mask]).sum())
+    contrib_novos = float(bf[novos_mask].sum())
+    contrib_perdidos = float(-bi[perdidos_mask].sum())
+    variacao_total = float(bf.sum() - bi.sum())
+
+    return {
+        "contrib_existentes": contrib_existentes,
+        "contrib_novos": contrib_novos,
+        "contrib_perdidos": contrib_perdidos,
+        "variacao_total": variacao_total,
+        "n_existentes": int(existentes_mask.sum()),
+        "n_novos": int(novos_mask.sum()),
+        "n_perdidos": int(perdidos_mask.sum()),
+    }
 
 
 # ==============================================================================
@@ -987,7 +1074,7 @@ inject_custom_css()
 
 st.sidebar.title("🌎 Navegação")
 NAV_KEY = "nav_page_radio"
-_PAGE_OPTIONS = ["📊 Dashboard Resumo", "📋 Tabela Completa (SH6)", "📦 CUCI Grupo", "🗺️ Análise por Estado"]
+_PAGE_OPTIONS = ["📊 Dashboard Resumo", "📋 Tabela Completa (SH6)", "📦 CUCI Grupo", "🏗️ CGCE (Categoria de Uso)", "🗺️ Análise por Estado"]
 if NAV_KEY not in st.session_state:
     st.session_state[NAV_KEY] = _PAGE_OPTIONS[0]
 PAGE = st.sidebar.radio(
@@ -1284,6 +1371,11 @@ def page_dashboard():
                 help="Herfindahl-Hirschman das exportações brasileiras por SH6 (0–10.000). "
                      "Quanto maior, mais concentrada/menos diversificada a pauta.",
             )
+            if pd.notna(kpis.get("n_efetivo")):
+                k4.caption(
+                    f"≈ {kpis['n_efetivo']:.0f} produtos efetivos "
+                    "(pauta se comporta como se tivesse esse nº de produtos igualmente relevantes)"
+                )
         else:
             k1, k2, k3, k4 = st.columns(4)
             k1.metric("CAGR Mundial (período)", format_pct(kpis["cagr_mundo"]))
@@ -1305,6 +1397,11 @@ def page_dashboard():
                 help="Herfindahl-Hirschman das exportações brasileiras por SH6 no ano final (0–10.000). "
                      "Quanto maior, mais concentrada/menos diversificada a pauta.",
             )
+            if pd.notna(kpis.get("n_efetivo")):
+                k4.caption(
+                    f"≈ {kpis['n_efetivo']:.0f} produtos efetivos "
+                    "(pauta se comporta como se tivesse esse nº de produtos igualmente relevantes)"
+                )
 
             k5, k6, k7, k8 = st.columns(4)
             k5.metric("Produtos SH6 exportados (início)", kpis["n_produtos_inicio"])
@@ -1343,6 +1440,7 @@ def page_dashboard():
             [
                 {"icon": "📋", "title": "Explorar produtos (Tabela Completa)", "target": "📋 Tabela Completa (SH6)"},
                 {"icon": "📦", "title": "Explorar por CUCI Grupo", "target": "📦 CUCI Grupo"},
+                {"icon": "🏗️", "title": "Explorar por CGCE (Uso)", "target": "🏗️ CGCE (Categoria de Uso)"},
                 {"icon": "🗺️", "title": "Ver exportações por Estado", "target": "🗺️ Análise por Estado"},
             ],
             NAV_KEY,
@@ -1439,6 +1537,77 @@ def page_dashboard():
                                                 code_col="sh6_cod", desc_col="sh6_desc")
 
     st.divider()
+
+    # ---------------- Decomposição do crescimento (margem intensiva x extensiva) ----------------
+    if product_metrics is not None and not single_year_mode:
+        decomp = compute_growth_decomposition(product_metrics)
+        if decomp:
+            st.subheader("📈 Decomposição do Crescimento das Exportações")
+            st.caption(
+                "Quanto da variação total das exportações do Brasil no período veio de produtos que já "
+                "eram exportados (margem intensiva), de produtos novos na pauta (margem extensiva positiva) "
+                "e de produtos que deixaram de ser exportados (margem extensiva negativa)."
+            )
+
+            dc1, dc2, dc3, dc4 = st.columns(4)
+            dc1.metric("Variação total no período", format_usd(decomp["variacao_total"]))
+            dc2.metric(f"Produtos existentes ({decomp['n_existentes']})", format_usd(decomp["contrib_existentes"]))
+            dc3.metric(f"Produtos novos ({decomp['n_novos']})", format_usd(decomp["contrib_novos"]))
+            dc4.metric(f"Produtos perdidos ({decomp['n_perdidos']})", format_usd(decomp["contrib_perdidos"]))
+
+            fig_decomp = go.Figure(go.Waterfall(
+                orientation="v",
+                measure=["relative", "relative", "relative", "total"],
+                x=["Produtos existentes", "Produtos novos", "Produtos perdidos", "Variação total"],
+                y=[decomp["contrib_existentes"], decomp["contrib_novos"], decomp["contrib_perdidos"], decomp["variacao_total"]],
+                text=[format_usd(v) for v in [decomp["contrib_existentes"], decomp["contrib_novos"],
+                                               decomp["contrib_perdidos"], decomp["variacao_total"]]],
+                textposition="outside",
+                connector={"line": {"color": "#bdbdbd"}},
+                decreasing={"marker": {"color": "#d73027"}},
+                increasing={"marker": {"color": "#1a9850"}},
+                totals={"marker": {"color": "#4a90d9"}},
+            ))
+            fig_decomp.update_layout(height=380, showlegend=False, yaxis_title="US$ FOB")
+            st.plotly_chart(fig_decomp, use_container_width=True)
+
+        st.divider()
+
+    # ---------------- Diversificação geográfica dos mercados compradores ----------------
+    if has_comexstat:
+        comexstat_geo = st.session_state["comexstat"]
+        last_year_geo = end_year if (end_year and end_year in comexstat_geo["ano"].unique()) else comexstat_geo["ano"].max()
+        geo_div = compute_geographic_diversification(comexstat_geo, last_year_geo)
+
+        if not geo_div.empty:
+            st.subheader("🌍 Diversificação Geográfica dos Mercados Compradores")
+            st.caption(
+                f"Concentração de países de destino por produto em {last_year_geo} — calculada a partir do "
+                "Comexstat. Produtos muito dependentes de um único comprador representam risco de mercado."
+            )
+
+            valor_ponderado = (geo_div["hhi_destino"] * geo_div["valor_total"]).sum() / geo_div["valor_total"].sum()
+            gd1, gd2, gd3 = st.columns(3)
+            gd1.metric("Nº médio de países por produto", format_num(geo_div["n_paises_destino"].mean(), 1))
+            gd2.metric("HHI médio de destino (ponderado pelo valor)", f"{valor_ponderado:,.0f}".replace(",", "."))
+            n_muito_concentrados = int((geo_div["hhi_destino"] >= 5000).sum())
+            gd3.metric("Produtos com HHI de destino ≥ 5.000", n_muito_concentrados,
+                       help="Produtos cuja exportação depende fortemente de 1-2 países compradores.")
+
+            with st.expander("🔎 Produtos mais dependentes de um único mercado comprador", expanded=False):
+                risky = geo_div.sort_values("hhi_destino", ascending=False).head(15)
+                show_risky = risky[["sh6_cod", "sh6_desc", "valor_total", "n_paises_destino",
+                                     "pais_principal", "pct_pais_principal", "hhi_destino"]].rename(columns={
+                    "sh6_cod": "SH6", "sh6_desc": "Descrição", "valor_total": "Valor Exportado",
+                    "n_paises_destino": "Nº Países", "pais_principal": "Principal Comprador",
+                    "pct_pais_principal": "% no Principal Comprador", "hhi_destino": "HHI Destino",
+                })
+                show_risky["Valor Exportado"] = show_risky["Valor Exportado"].apply(format_usd)
+                show_risky["% no Principal Comprador"] = show_risky["% no Principal Comprador"].apply(format_pct)
+                show_risky["HHI Destino"] = show_risky["HHI Destino"].apply(lambda x: f"{x:,.0f}".replace(",", "."))
+                st.dataframe(show_risky, use_container_width=True, hide_index=True, height=420)
+
+        st.divider()
 
     # ---------------- Outros dados relevantes ----------------
     st.subheader("📌 Outros indicadores relevantes")
@@ -1770,6 +1939,143 @@ def page_cuci_grupo():
 
 
 # ==============================================================================
+# 8B. PÁGINA — CGCE (CATEGORIA DE USO E CONSUMO EM GRANDE CATEGORIA ECONÔMICA)
+# ==============================================================================
+
+
+def page_cgce():
+    st.title("🏗️ Análise por CGCE — Categoria de Uso Econômica")
+    st.caption(
+        "A CGCE classifica cada produto pela sua utilização econômica típica — Bens de Capital, "
+        "Bens Intermediários, Bens de Consumo ou Combustíveis e Lubrificantes — revelando o perfil "
+        "produtivo da pauta exportadora (ex.: se o Brasil está exportando mais matéria-prima ou "
+        "produtos de maior valor agregado)."
+    )
+
+    if not has_comexstat:
+        st.warning("Envie o arquivo Comexstat na barra lateral primeiro.")
+        return
+
+    comexstat = st.session_state["comexstat"]
+    if "cgce1_desc" not in comexstat.columns:
+        st.error(
+            "Coluna de CGCE (Nível 1) não encontrada no arquivo Comexstat. Verifique se o arquivo "
+            "enviado inclui as colunas de Categoria de Uso e Consumo em Grande Categoria Econômica."
+        )
+        return
+
+    last_year = end_year if end_year else comexstat["ano"].max()
+
+    st.divider()
+
+    # ---------------- Composição da pauta por CGCE Nível 1 ----------------
+    st.subheader(f"Composição da pauta exportadora por CGCE em {last_year}")
+    base = comexstat[comexstat["ano"] == last_year]
+    comp_cgce1 = base.groupby("cgce1_desc")["valor_fob"].sum().sort_values(ascending=False).reset_index()
+
+    c1, c2 = st.columns([1, 1])
+    with c1:
+        fig_pie = px.pie(comp_cgce1, names="cgce1_desc", values="valor_fob", hole=0.45)
+        fig_pie.update_layout(height=380, legend_title="CGCE Nível 1")
+        st.plotly_chart(fig_pie, use_container_width=True)
+    with c2:
+        fig_bar = px.bar(comp_cgce1, x="valor_fob", y="cgce1_desc", orientation="h")
+        fig_bar.update_layout(yaxis={"categoryorder": "total ascending"}, yaxis_title="",
+                               xaxis_title="US$ FOB", height=380)
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+    st.divider()
+
+    # ---------------- Evolução temporal por CGCE Nível 1 ----------------
+    st.subheader("Evolução temporal por CGCE Nível 1")
+    evol_cgce = comexstat.groupby(["ano", "cgce1_desc"])["valor_fob"].sum().reset_index()
+    view_mode = st.radio("Visualização", ["Valor absoluto", "Participação (%)"], horizontal=True, key="cgce_view_mode")
+    if view_mode == "Participação (%)":
+        evol_cgce["total_ano"] = evol_cgce.groupby("ano")["valor_fob"].transform("sum")
+        evol_cgce["participacao"] = evol_cgce["valor_fob"] / evol_cgce["total_ano"]
+        fig_evol = px.area(evol_cgce, x="ano", y="participacao", color="cgce1_desc", groupnorm=None)
+        fig_evol.update_layout(yaxis_tickformat=".0%", yaxis_title="Participação na pauta",
+                                xaxis_title="Ano", height=420, legend_title="CGCE Nível 1")
+    else:
+        fig_evol = px.area(evol_cgce, x="ano", y="valor_fob", color="cgce1_desc")
+        fig_evol.update_layout(yaxis_title="US$ FOB", xaxis_title="Ano", height=420, legend_title="CGCE Nível 1")
+    st.plotly_chart(fig_evol, use_container_width=True)
+
+    st.caption(
+        "💡 Um aumento sustentado na participação de Bens de Consumo e/ou Bens de Capital (em detrimento "
+        "de Bens Intermediários e Combustíveis) costuma indicar maior agregação de valor na pauta exportadora."
+    )
+
+    st.divider()
+
+    # ---------------- Detalhamento de uma categoria CGCE ----------------
+    st.subheader("Detalhamento de uma categoria CGCE")
+    cgce1_options = sorted(comexstat["cgce1_desc"].dropna().unique().tolist())
+    if not cgce1_options:
+        st.info("Nenhuma categoria CGCE disponível.")
+        return
+    selected_cgce1 = st.selectbox("Selecione a Categoria CGCE (Nível 1)", cgce1_options)
+
+    cat_df = comexstat[comexstat["cgce1_desc"] == selected_cgce1]
+
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Valor exportado (último ano)", format_usd(cat_df[cat_df["ano"] == last_year]["valor_fob"].sum()))
+    evol_cat = cat_df.groupby("ano")["valor_fob"].sum()
+    if len(evol_cat) >= 2:
+        v0, v1 = evol_cat.iloc[0], evol_cat.iloc[-1]
+        growth = (v1 / v0 - 1) if v0 else None
+        k2.metric("Crescimento no período (nominal)", format_pct(growth) if growth is not None else "—")
+    k3.metric("Nº de SH6 na categoria", cat_df["sh6_cod"].nunique())
+
+    if "cgce2_desc" in cat_df.columns:
+        st.markdown(f"**Detalhamento por CGCE Nível 2 dentro de '{selected_cgce1}' ({last_year})**")
+        comp_cgce2 = (
+            cat_df[cat_df["ano"] == last_year].groupby("cgce2_desc")["valor_fob"]
+            .sum().sort_values(ascending=False).reset_index()
+        )
+        if not comp_cgce2.empty:
+            fig_cgce2 = px.bar(comp_cgce2, x="valor_fob", y="cgce2_desc", orientation="h")
+            fig_cgce2.update_layout(yaxis={"categoryorder": "total ascending"}, yaxis_title="",
+                                     xaxis_title="US$ FOB", height=400)
+            st.plotly_chart(fig_cgce2, use_container_width=True)
+
+    st.markdown(f"**Principais SH6 em '{selected_cgce1}' ({last_year})**")
+    top_sh6_cat = (
+        cat_df[cat_df["ano"] == last_year].groupby(["sh6_cod", "sh6_desc"])["valor_fob"]
+        .sum().sort_values(ascending=False).head(15).reset_index()
+    )
+
+    if product_metrics is not None:
+        top_sh6_cat = top_sh6_cat.merge(
+            product_metrics[["sh6", "cagr_mundo", "rca_fim", "quadrante"]],
+            left_on="sh6_cod", right_on="sh6", how="left",
+        ).drop(columns=["sh6"])
+
+    show_cat = top_sh6_cat.copy()
+    show_cat["valor_fob"] = show_cat["valor_fob"].apply(format_usd)
+    if "cagr_mundo" in show_cat.columns:
+        show_cat["cagr_mundo"] = show_cat["cagr_mundo"].apply(format_pct)
+    if "rca_fim" in show_cat.columns:
+        show_cat["rca_fim"] = show_cat["rca_fim"].apply(lambda x: format_num(x, 2))
+    st.dataframe(
+        show_cat.rename(columns={
+            "sh6_cod": "SH6", "sh6_desc": "Descrição", "valor_fob": "Valor FOB",
+            "cagr_mundo": "CAGR Mundo", "rca_fim": "RCA", "quadrante": "Quadrante",
+        }),
+        use_container_width=True, hide_index=True, height=420,
+    )
+
+    if product_metrics is not None and "quadrante" in top_sh6_cat.columns:
+        active_q_cat = SINGLE_YEAR_QUADRANTS if st.session_state.get("single_year_mode") else QUADRANT_ORDER
+        qc_cat = top_sh6_cat["quadrante"].value_counts().reindex(active_q_cat).fillna(0).reset_index()
+        qc_cat.columns = ["quadrante", "n"]
+        qc_cat["quadrante_curto"] = qc_cat["quadrante"].map(QUADRANT_SHORT)
+        fig_qcat = px.bar(qc_cat, x="quadrante_curto", y="n", color="quadrante", color_discrete_map=QUADRANT_COLORS)
+        fig_qcat.update_layout(showlegend=False, xaxis_title="", yaxis_title="Nº de produtos SH6 (top 15 exibidos acima)")
+        st.plotly_chart(fig_qcat, use_container_width=True)
+
+
+# ==============================================================================
 # 9. PÁGINA 4 — ANÁLISE POR ESTADO
 # ==============================================================================
 
@@ -1978,5 +2284,7 @@ elif PAGE == "📋 Tabela Completa (SH6)":
     page_tabela_completa()
 elif PAGE == "📦 CUCI Grupo":
     page_cuci_grupo()
+elif PAGE == "🏗️ CGCE (Categoria de Uso)":
+    page_cgce()
 elif PAGE == "🗺️ Análise por Estado":
     page_estado()
