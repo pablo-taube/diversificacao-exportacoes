@@ -1590,34 +1590,68 @@ def page_tabela_completa():
         if analytic.empty:
             st.info("Nenhum produto do filtro atual possui dados do Comtrade correspondentes.")
         else:
-            analytic_disp = analytic[[
-                "sh6", "sh6_desc", "mundo_inicio", "mundo_fim", "brasil_inicio", "brasil_fim",
-                "participacao_inicio", "participacao_fim", "var_participacao",
-                "cagr_mundo", "cagr_brasil", "rca_inicio", "rca_fim", "var_rca", "quadrante",
-            ]].rename(columns={
-                "sh6": "SH6", "sh6_desc": "Descrição",
-                "mundo_inicio": f"Mundo {start_year}", "mundo_fim": f"Mundo {end_year}",
-                "brasil_inicio": f"Brasil {start_year}", "brasil_fim": f"Brasil {end_year}",
-                "participacao_inicio": f"Part. Mundial {start_year}", "participacao_fim": f"Part. Mundial {end_year}",
-                "var_participacao": "Variação da Participação (Mundo)",
-                "cagr_mundo": "CAGR Mundo", "cagr_brasil": "CAGR Brasil (produto)",
-                "rca_inicio": f"RCA {start_year}", "rca_fim": f"RCA {end_year}",
-                "var_rca": "Variação do RCA (espaço)", "quadrante": "Quadrante",
-            })
+            single_year_mode_tab = bool(st.session_state.get("single_year_mode"))
 
-            fmt_cols_usd = [f"Mundo {start_year}", f"Mundo {end_year}", f"Brasil {start_year}", f"Brasil {end_year}"]
-            fmt_cols_pct = [f"Part. Mundial {start_year}", f"Part. Mundial {end_year}",
-                            "Variação da Participação (Mundo)", "CAGR Mundo", "CAGR Brasil (produto)"]
+            if single_year_mode_tab:
+                # Apenas 1 ano de Comtrade: não há "início" vs "fim" (seriam
+                # colunas duplicadas com o mesmo valor). Mostra só o RCA de
+                # nível (Balassa), a participação de mercado e a classificação
+                # por nível de RCA para o ano disponível — sem CAGR/variação,
+                # que exigem 2 pontos no tempo.
+                st.caption(
+                    f"⚠️ Apenas **1 ano** de dados Comtrade disponível ({start_year}). Exibindo o RCA (Balassa) "
+                    "de nível para esse ano; CAGR mundial, CAGR do Brasil e variação de RCA (tendência) não "
+                    "são exibidos por exigirem pelo menos 2 anos."
+                )
+                analytic_disp = analytic[[
+                    "sh6", "sh6_desc", "mundo_fim", "brasil_fim", "participacao_fim", "rca_fim", "quadrante",
+                ]].rename(columns={
+                    "sh6": "SH6", "sh6_desc": "Descrição",
+                    "mundo_fim": f"Mundo {start_year}", "brasil_fim": f"Brasil {start_year}",
+                    "participacao_fim": f"Part. Mundial {start_year}",
+                    "rca_fim": f"RCA {start_year}", "quadrante": "Quadrante",
+                })
 
-            show = analytic_disp.copy()
-            for c in fmt_cols_usd:
-                show[c] = show[c].apply(format_usd)
-            for c in fmt_cols_pct:
-                show[c] = show[c].apply(format_pct)
-            for c in [f"RCA {start_year}", f"RCA {end_year}", "Variação do RCA (espaço)"]:
-                show[c] = show[c].apply(lambda x: format_num(x, 2))
+                fmt_cols_usd = [f"Mundo {start_year}", f"Brasil {start_year}"]
+                fmt_cols_pct = [f"Part. Mundial {start_year}"]
 
-            st.dataframe(show, use_container_width=True, hide_index=True, height=450)
+                show = analytic_disp.copy()
+                for c in fmt_cols_usd:
+                    show[c] = show[c].apply(format_usd)
+                for c in fmt_cols_pct:
+                    show[c] = show[c].apply(format_pct)
+                show[f"RCA {start_year}"] = show[f"RCA {start_year}"].apply(lambda x: format_num(x, 2))
+
+                st.dataframe(show, use_container_width=True, hide_index=True, height=450)
+            else:
+                analytic_disp = analytic[[
+                    "sh6", "sh6_desc", "mundo_inicio", "mundo_fim", "brasil_inicio", "brasil_fim",
+                    "participacao_inicio", "participacao_fim", "var_participacao",
+                    "cagr_mundo", "cagr_brasil", "rca_inicio", "rca_fim", "var_rca", "quadrante",
+                ]].rename(columns={
+                    "sh6": "SH6", "sh6_desc": "Descrição",
+                    "mundo_inicio": f"Mundo {start_year}", "mundo_fim": f"Mundo {end_year}",
+                    "brasil_inicio": f"Brasil {start_year}", "brasil_fim": f"Brasil {end_year}",
+                    "participacao_inicio": f"Part. Mundial {start_year}", "participacao_fim": f"Part. Mundial {end_year}",
+                    "var_participacao": "Variação da Participação (Mundo)",
+                    "cagr_mundo": "CAGR Mundo", "cagr_brasil": "CAGR Brasil (produto)",
+                    "rca_inicio": f"RCA {start_year}", "rca_fim": f"RCA {end_year}",
+                    "var_rca": "Variação do RCA (espaço)", "quadrante": "Quadrante",
+                })
+
+                fmt_cols_usd = [f"Mundo {start_year}", f"Mundo {end_year}", f"Brasil {start_year}", f"Brasil {end_year}"]
+                fmt_cols_pct = [f"Part. Mundial {start_year}", f"Part. Mundial {end_year}",
+                                "Variação da Participação (Mundo)", "CAGR Mundo", "CAGR Brasil (produto)"]
+
+                show = analytic_disp.copy()
+                for c in fmt_cols_usd:
+                    show[c] = show[c].apply(format_usd)
+                for c in fmt_cols_pct:
+                    show[c] = show[c].apply(format_pct)
+                for c in [f"RCA {start_year}", f"RCA {end_year}", "Variação do RCA (espaço)"]:
+                    show[c] = show[c].apply(lambda x: format_num(x, 2))
+
+                st.dataframe(show, use_container_width=True, hide_index=True, height=450)
 
             st.download_button(
                 "⬇️ Baixar indicadores completos (CSV)",
@@ -1870,13 +1904,14 @@ def page_estado():
         )
         uf_merged["quadrante"] = uf_merged["quadrante"].fillna("Sem dados suficientes")
 
+        active_q_uf = SINGLE_YEAR_QUADRANTS if st.session_state.get("single_year_mode") else QUADRANT_ORDER
         quad_val = uf_merged.groupby("quadrante")["valor_fob"].sum().reindex(
-            QUADRANT_ORDER + ["Sem dados suficientes"]
+            active_q_uf + ["Sem dados suficientes"]
         ).fillna(0)
         total_val = quad_val.sum()
 
-        cols_q = st.columns(4)
-        for i, q in enumerate(QUADRANT_ORDER):
+        cols_q = st.columns(len(active_q_uf))
+        for i, q in enumerate(active_q_uf):
             pct = (quad_val.get(q, 0) / total_val) if total_val else np.nan
             cols_q[i].metric(QUADRANT_SHORT[q], format_pct(pct))
 
