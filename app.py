@@ -2,7 +2,7 @@
 """
 ==============================================================================
  SISTEMA DE ANÁLISE DE DIVERSIFICAÇÃO DAS EXPORTAÇÕES BRASILEIRAS
- (Glassmorfismo Cupertino) — v4.1 (Ajustes de Compatibilidade Streamlit & KeyError)
+ (Glassmorfismo Cupertino) — v4.2 (Cartões Pastel de Métricas)
 ==============================================================================
 """
 
@@ -429,35 +429,46 @@ def inject_custom_css():
             border-right: 1px solid rgba(255, 255, 255, 0.7) !important;
         }
 
-        .stat-row {
+        /* Grid para Cartões Pastel de Métricas Superior */
+        .metric-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin: 14px 0 28px 0;
+        }
+
+        .metric-card {
+            border-radius: 20px;
+            padding: 20px 22px;
+            backdrop-filter: blur(18px) saturate(180%);
+            -webkit-backdrop-filter: blur(18px) saturate(180%);
+            border: 1px solid rgba(255, 255, 255, 0.85);
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.02);
             display: flex;
-            gap: 32px;
-            flex-wrap: wrap;
-            margin: 12px 0 28px 0;
-            padding: 20px 28px;
-            background: rgba(255, 255, 255, 0.55);
-            backdrop-filter: blur(16px) saturate(180%);
-            -webkit-backdrop-filter: blur(16px);
-            border-radius: 22px;
-            border: 1px solid rgba(255, 255, 255, 0.8);
-            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.02);
+            flex-direction: column;
+            justify-content: center;
+            transition: all 0.25s ease;
         }
 
-        .stat-item .stat-value {
-            font-size: 2.2rem;
+        .metric-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 28px rgba(0, 0, 0, 0.04);
+        }
+
+        .metric-card .m-value {
+            font-size: 1.95rem;
             font-weight: 800;
-            line-height: 1.1;
-            letter-spacing: -0.03em;
-            color: #1d1d1f;
+            line-height: 1.15;
+            letter-spacing: -0.025em;
         }
 
-        .stat-item .stat-label {
-            font-size: 0.78rem;
-            font-weight: 600;
-            color: #86868b;
-            margin-top: 5px;
+        .metric-card .m-label {
+            font-size: 0.74rem;
+            font-weight: 700;
+            margin-top: 6px;
             text-transform: uppercase;
-            letter-spacing: 0.05em;
+            letter-spacing: 0.04em;
+            color: #6b7280;
         }
 
         .quadrant-grid {
@@ -671,19 +682,35 @@ def page_comtrade_global():
     if only_advantage:
         filtered_df = filtered_df[filtered_df["rca_partner"] >= 1.0]
 
+    # --- CÁLCULO DAS 5 MÉTRICAS PRINCIPAIS ---
+    media_rca = filtered_df["rca_partner"].mean() if not filtered_df.empty else 0.0
+    media_rsca = filtered_df["rsca_partner"].mean() if not filtered_df.empty else 0.0
+    sh6_gt_1 = filtered_df[filtered_df["rca_partner"] > 1.0]["sh6"].nunique() if not filtered_df.empty else 0
+    sh6_lt_1 = filtered_df[filtered_df["rca_partner"] < 1.0]["sh6"].nunique() if not filtered_df.empty else 0
+    paises_rca_gt_1 = filtered_df[filtered_df["rca_partner"] > 1.0]["partner"].nunique() if not filtered_df.empty else 0
+
+    # --- RENDERIZAÇÃO DOS CARTÕES EM TONS PASTEIS ---
     html_stats = f"""
-    <div class="stat-row">
-        <div class="stat-item">
-            <div class="stat-value">{len(filtered_df):,}</div>
-            <div class="stat-label">Registros Processados</div>
+    <div class="metric-grid">
+        <div class="metric-card" style="background: rgba(239, 246, 255, 0.85); border-color: rgba(59, 130, 246, 0.35);">
+            <div class="m-value" style="color: #2563eb;">{format_num(media_rca, 2)}</div>
+            <div class="m-label">Média RCA por Partner</div>
         </div>
-        <div class="stat-item">
-            <div class="stat-value">{format_num(filtered_df['rca_partner'].mean(), 2)}</div>
-            <div class="stat-label">Média do RCA por Partner</div>
+        <div class="metric-card" style="background: rgba(236, 253, 245, 0.85); border-color: rgba(16, 185, 129, 0.35);">
+            <div class="m-value" style="color: #059669;">{format_num(media_rsca, 2)}</div>
+            <div class="m-label">Média RSCA por Partner</div>
         </div>
-        <div class="stat-item">
-            <div class="stat-value">{format_num(filtered_df['rsca_partner'].mean(), 2)}</div>
-            <div class="stat-label">Média do RSCA por Partner</div>
+        <div class="metric-card" style="background: rgba(240, 253, 244, 0.85); border-color: rgba(34, 197, 94, 0.35);">
+            <div class="m-value" style="color: #16a34a;">{sh6_gt_1:,}</div>
+            <div class="m-label">Produtos SH6 (RCA > 1)</div>
+        </div>
+        <div class="metric-card" style="background: rgba(254, 242, 242, 0.85); border-color: rgba(239, 68, 68, 0.35);">
+            <div class="m-value" style="color: #dc2626;">{sh6_lt_1:,}</div>
+            <div class="m-label">Produtos SH6 (RCA < 1)</div>
+        </div>
+        <div class="metric-card" style="background: rgba(245, 243, 255, 0.85); border-color: rgba(139, 92, 246, 0.35);">
+            <div class="m-value" style="color: #7c3aed;">{paises_rca_gt_1:,}</div>
+            <div class="m-label">Países Únicos (RCA > 1)</div>
         </div>
     </div>
     """
