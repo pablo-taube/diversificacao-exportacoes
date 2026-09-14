@@ -244,8 +244,9 @@ def standardize_comexstat(df: pd.DataFrame) -> pd.DataFrame:
         df["valor_fob"] = df["valor_fob"].fillna(0.0)
 
     if "sh6_cod" in df.columns:
-        extracted = df["sh6_cod"].astype(str).str.extract(r"(\d+)")[0]
-        df["sh6_cod"] = extracted.fillna(df["sh6_cod"].astype(str)).astype(str).str.zfill(6)
+        # PELO NOVO CÓDIGO (Tratamento seguro contra decimais e nulos):
+        sh_clean = pd.to_numeric(d["sh6"], errors="coerce").fillna(0).astype(int).astype(str)
+        d["sh6"] = sh_clean.str.zfill(6)
 
     if "uf" in df.columns:
         df["uf"] = df["uf"].astype(str).str.strip().str.upper()
@@ -732,30 +733,37 @@ if file_comtrade:
         raw_ct = read_any_file(file_comtrade.getvalue(), file_comtrade.name)
         st.session_state["raw_comtrade"] = raw_ct
         st.session_state["_file_comtrade_name"] = file_comtrade.name
-        
-        # Tenta processar automaticamente usando as colunas inferidas
+        st.session_state.pop("comtrade_tidy", None)
+
+        # Tenta inferir colunas e processar automaticamente
         guesses = guess_comtrade_columns(raw_ct)
         cols = list(raw_ct.columns)
-        
-        if guesses["year"] and guesses["reporter"] and guesses["partner"] and guesses["sh6"] and guesses["value"]:
+
+        if all(guesses[k] in cols for k in ["year", "reporter", "partner", "sh6", "value"]):
             partners_list = sorted(raw_ct[guesses["partner"]].dropna().astype(str).unique().tolist())
             world_vals = [p for p in partners_list if is_world_label(p)]
             
-            # Se não encontrar o rótulo "world", assume a lista de parceiros marcados como agregados comuns
+            # Se não identificar rótulo com a palavra 'world'/'mundo', busca agregados padrão (0 ou Total)
             if not world_vals:
-                world_vals = [p for p in partners_list if p.lower() in ["world", "mundo", "total", "all partners", "0"]]
-            
+                world_vals = [p for p in partners_list if str(p).lower() in ["world", "mundo", "total", "all partners", "0", "000"]]
+
             if world_vals:
-                st.session_state["comtrade_tidy"] = standardize_comtrade(
-                    df=raw_ct,
-                    year_col=guesses["year"],
-                    reporter_col=guesses["reporter"],
-                    partner_col=guesses["partner"],
-                    sh6_col=guesses["sh6"],
-                    sh6desc_col=guesses["sh6_desc"],
-                    value_col=guesses["value"],
-                    world_partner_values=world_vals
-                )
+                try:
+                    tidy_ct = standardize_comtrade(
+                        df=raw_ct,
+                        year_col=guesses["year"],
+                        reporter_col=guesses["reporter"],
+                        partner_col=guesses["partner"],
+                        sh6_col=guesses["sh6"],
+                        sh6desc_col=guesses["sh6_desc"],
+                        value_col=guesses["value"],
+                        world_partner_values=world_vals,
+                        selected_reporters=[]
+                    )
+                    if not tidy_ct.empty:
+                        st.session_state["comtrade_tidy"] = tidy_ct
+                except Exception:
+                    pass
 
 if file_comexstat:
     if st.session_state.get("_file_comexstat_name") != file_comexstat.name:
@@ -784,6 +792,9 @@ if "raw_comtrade" in st.session_state:
 
         partners_list = sorted(df_ct[c_prt].dropna().astype(str).unique().tolist())
         default_world = [p for p in partners_list if is_world_label(p)]
+        if not default_world:
+            default_world = [p for p in partners_list if str(p).lower() in ["world", "mundo", "total", "all partners", "0", "000"]]
+            
         world_vals = st.multiselect("Valores equivalentes a 'World' (parceiro):", partners_list, default=default_world)
 
         reporters_list = sorted(df_ct[c_rep].dropna().astype(str).unique().tolist())
@@ -791,9 +802,6 @@ if "raw_comtrade" in st.session_state:
             "Filtrar Países Reporters (vazio = todos):",
             reporters_list,
             default=[],
-            help="Uma linha de reporter 'World'/'Mundo', se existir na base, é sempre mantida "
-                 "e usada como referência do total mundial para o cálculo do RCA — mesmo que "
-                 "você não a selecione aqui.",
         )
 
         selected_cols = [c_yr, c_rep, c_prt, c_sh6, c_val]
@@ -801,7 +809,7 @@ if "raw_comtrade" in st.session_state:
         if has_dupe:
             st.warning("⚠️ Duas ou mais configurações apontam para a mesma coluna. Revise as seleções acima.")
 
-        if st.button("Processar Métricas Comtrade", type="primary", disabled=has_dupe or not world_vals):
+        if st.button("Re-processar Métricas Comtrade", type="primary", disabled=has_dupe or not world_vals):
             if not world_vals:
                 st.error("Selecione ao menos um valor de 'partner' equivalente a 'World'.")
             else:
