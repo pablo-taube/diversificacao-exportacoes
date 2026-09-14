@@ -732,7 +732,30 @@ if file_comtrade:
         raw_ct = read_any_file(file_comtrade.getvalue(), file_comtrade.name)
         st.session_state["raw_comtrade"] = raw_ct
         st.session_state["_file_comtrade_name"] = file_comtrade.name
-        st.session_state.pop("comtrade_tidy", None)
+        
+        # Tenta processar automaticamente usando as colunas inferidas
+        guesses = guess_comtrade_columns(raw_ct)
+        cols = list(raw_ct.columns)
+        
+        if guesses["year"] and guesses["reporter"] and guesses["partner"] and guesses["sh6"] and guesses["value"]:
+            partners_list = sorted(raw_ct[guesses["partner"]].dropna().astype(str).unique().tolist())
+            world_vals = [p for p in partners_list if is_world_label(p)]
+            
+            # Se não encontrar o rótulo "world", assume a lista de parceiros marcados como agregados comuns
+            if not world_vals:
+                world_vals = [p for p in partners_list if p.lower() in ["world", "mundo", "total", "all partners", "0"]]
+            
+            if world_vals:
+                st.session_state["comtrade_tidy"] = standardize_comtrade(
+                    df=raw_ct,
+                    year_col=guesses["year"],
+                    reporter_col=guesses["reporter"],
+                    partner_col=guesses["partner"],
+                    sh6_col=guesses["sh6"],
+                    sh6desc_col=guesses["sh6_desc"],
+                    value_col=guesses["value"],
+                    world_partner_values=world_vals
+                )
 
 if file_comexstat:
     if st.session_state.get("_file_comexstat_name") != file_comexstat.name:
