@@ -2,7 +2,7 @@
 """
 ==============================================================================
  SISTEMA DE ANÁLISE DE DIVERSIFICAÇÃO DAS EXPORTAÇÕES BRASILEIRAS
- (Glassmorfismo Cupertino) — v5.1 (RCA Global & Bilateral por Partner)
+ (Glassmorfismo Cupertino) — v6.0 (RCA, RSCA, Market Share & Dinamismo Mundial)
 ==============================================================================
 """
 
@@ -257,122 +257,124 @@ def standardize_comtrade(
 
 
 # ==============================================================================
-# 4. MOTOR DE CÁLCULO DUAL (RCA GLOBAL & RCA BILATERAL POR PARTNER)
+# 4. MOTOR DE CÁLCULO DE MÉTRICAS OFICIAIS (RCA, RSCA, MARKET SHARE E DINAMISMO MUNDIAL)
 # ==============================================================================
 
-@st.cache_data(show_spinner="Calculando RCA/RSCA Globais e Bilaterais...")
+@st.cache_data(show_spinner="Calculando RCA, RSCA, Market Share e Dinamismo da Demanda Mundial...")
 def compute_comtrade_metrics(comtrade_tidy: pd.DataFrame, years: tuple) -> pd.DataFrame:
+    """Calcula os indicadores oficiais consolidados por SH6:
+
+    1. RCA Global (Balassa)
+    2. RSCA Global (Laursen - Simétrico)
+    3. Market Share Global (% da exportação do país sobre a exportação mundial do SH6)
+    4. Dinamismo da Demanda Mundial (% de variação/CAGR da demanda global do SH6)
+    5. Matriz Trimétrica CEPAL/MAGIC (Classificação em Estrela/Oportunidade, Vulnerabilidade, Oportunidade Perdida, Retirada)
+    """
     years = tuple(sorted(set(int(y) for y in years)))
     df_filtered = comtrade_tidy[comtrade_tidy["ano"].isin(years)].copy()
     if df_filtered.empty:
         return pd.DataFrame(columns=[
-            "ano", "reporter", "partner", "sh6", "sh6_desc", "valor", "mundo_valor",
-            "rca_global", "rsca_global", "rca_partner", "rsca_partner"
+            "sh6", "sh6_desc", "reporter", "valor", "mundo_valor",
+            "market_share_pct", "rca_global", "rsca_global",
+            "crescimento_mundo_pct", "posicao_estrategica", "ano_inicio", "ano_fim"
         ])
 
-    year_frames = []
+    min_year, max_year = years[0], years[-1]
+    num_years = max_year - min_year
 
-    for yr in years:
-        df_yr = df_filtered[df_filtered["ano"] == yr]
-        if df_yr.empty:
-            continue
+    # Agregação global por Ano, Reporter e SH6 (somando parceiros)
+    rep_sh6_yr = df_filtered.groupby(["ano", "reporter", "sh6", "sh6_desc"], as_index=False)["valor"].sum()
 
-        # 1. RCA Global (Consolidado por Reporter x SH6 no mundo)
-        rep_sh6 = df_yr.groupby(["reporter", "sh6", "sh6_desc"], as_index=False)["valor"].sum()
-        reporters = rep_sh6["reporter"].unique()
-        world_reporter = detect_world_label(reporters)
+    reporters = rep_sh6_yr["reporter"].unique()
+    world_rep = detect_world_label(reporters)
 
-        if world_reporter:
-            world_df = rep_sh6[rep_sh6["reporter"] == world_reporter].groupby("sh6")["valor"].sum()
-            rep_df = rep_sh6[rep_sh6["reporter"] != world_reporter].copy()
+    if world_rep:
+        world_df = rep_sh6_yr[rep_sh6_yr["reporter"] == world_rep].groupby(["ano", "sh6"])["valor"].sum().reset_index()
+        rep_df = rep_sh6_yr[rep_sh6_yr["reporter"] != world_rep].copy()
+    else:
+        world_df = rep_sh6_yr.groupby(["ano", "sh6"])["valor"].sum().reset_index()
+        rep_df = rep_sh6_yr.copy()
+
+    world_df = world_df.rename(columns={"valor": "mundo_valor"})
+
+    # Cálculo do Dinamismo da Demanda Mundial (CAGR no período ou Variação %)
+    w_min = world_df[world_df["ano"] == min_year][["sh6", "mundo_valor"]].rename(columns={"mundo_valor": "mundo_val_init"})
+    w_max = world_df[world_df["ano"] == max_year][["sh6", "mundo_valor"]].rename(columns={"mundo_valor": "mundo_val_final"})
+
+    w_growth = pd.merge(w_min, w_max, on="sh6", how="outer").fillna(0.0)
+
+    if num_years > 0:
+        w_growth["crescimento_mundo_pct"] = np.where(
+            w_growth["mundo_val_init"] > 0,
+            ((w_growth["mundo_val_final"] / w_growth["mundo_val_init"]) ** (1.0 / num_years) - 1.0) * 100.0,
+            0.0
+        )
+    else:
+        w_growth["crescimento_mundo_pct"] = 0.0
+
+    # Consolidação do período para valores acumulados
+    rep_period = rep_df.groupby(["reporter", "sh6", "sh6_desc"], as_index=False)["valor"].sum()
+    world_period = world_df.groupby("sh6", as_index=False)["mundo_valor"].sum()
+
+    X_w_total = float(world_period["mundo_valor"].sum())
+
+    pv_rep = rep_period.pivot_table(index="sh6", columns="reporter", values="valor", aggfunc="sum", fill_value=0.0)
+    X_i_total = pv_rep.sum(axis=0)
+
+    # Share do produto no país: S_{i,k} = X_{i,k} / X_i
+    share_pais = pv_rep.div(X_i_total.replace(0, np.nan), axis=1).fillna(0.0)
+
+    # Share do produto no mundo: S_{w,k} = X_{w,k} / X_w
+    world_map = world_period.set_index("sh6")["mundo_valor"]
+    share_mundo = (world_map / X_w_total) if X_w_total > 0 else pd.Series(0.0, index=pv_rep.index)
+    share_mundo = share_mundo.reindex(pv_rep.index).fillna(0.0)
+
+    # 1. RCA (Balassa) e RSCA (Laursen - Simétrico)
+    rca_df = share_pais.div(share_mundo.replace(0, np.nan), axis=0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    rsca_df = ((rca_df - 1) / (rca_df + 1)).fillna(-1.0)
+
+    # 2. Market Share Global (%): MS_{i,k} = X_{i,k} / X_{w,k}
+    ms_df = pv_rep.div(world_map.replace(0, np.nan), axis=0).fillna(0.0) * 100.0
+
+    # Estruturação Tidy
+    val_long = pv_rep.stack().rename("valor").reset_index()
+    rca_long = rca_df.stack().rename("rca_global").reset_index()
+    rsca_long = rsca_df.stack().rename("rsca_global").reset_index()
+    ms_long = ms_df.stack().rename("market_share_pct").reset_index()
+
+    merged = val_long.merge(rca_long, on=["sh6", "reporter"])\
+                     .merge(rsca_long, on=["sh6", "reporter"])\
+                     .merge(ms_long, on=["sh6", "reporter"])
+
+    sh6_descs = rep_period.groupby("sh6")["sh6_desc"].first()
+    merged["sh6_desc"] = merged["sh6"].map(sh6_descs)
+    merged["mundo_valor"] = merged["sh6"].map(world_map).fillna(0.0)
+
+    # Adicionar Dinamismo da Demanda Mundial
+    grow_map = w_growth.set_index("sh6")["crescimento_mundo_pct"]
+    merged["crescimento_mundo_pct"] = merged["sh6"].map(grow_map).fillna(0.0)
+
+    # Classificação Trimétrica CEPAL / MAGIC
+    def classify(row):
+        advantage = row["rsca_global"] > 0
+        dynamic = row["crescimento_mundo_pct"] > 0
+        if advantage and dynamic:
+            return "🌟 Oportunidade (Star)"
+        elif advantage and not dynamic:
+            return "⚠️ Vulnerabilidade"
+        elif not advantage and dynamic:
+            return "🚀 Oportunidade Perdida"
         else:
-            world_df = rep_sh6.groupby("sh6")["valor"].sum()
-            rep_df = rep_sh6.copy()
+            return "📉 Retirada / Neutro"
 
-        X_w = float(world_df.sum())
+    merged["posicao_estrategica"] = merged.apply(classify, axis=1)
+    merged["ano_inicio"] = min_year
+    merged["ano_fim"] = max_year
 
-        if X_w > 0 and not rep_df.empty:
-            pv_rep = rep_df.pivot_table(index="sh6", columns="reporter", values="valor", aggfunc="sum", fill_value=0.0)
-            X_i = pv_rep.sum(axis=0)
-
-            share_pais_g = pv_rep.div(X_i.replace(0, np.nan), axis=1).fillna(0.0)
-            share_mundo_g = (world_df / X_w).reindex(pv_rep.index).fillna(0.0)
-
-            rca_g_df = share_pais_g.div(share_mundo_g.replace(0, np.nan), axis=0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
-            rsca_g_df = ((rca_g_df - 1) / (rca_g_df + 1)).fillna(-1.0)
-
-            rca_g_long = rca_g_df.stack().rename("rca_global").reset_index()
-            rsca_g_long = rsca_g_df.stack().rename("rsca_global").reset_index()
-            global_metrics = rca_g_long.merge(rsca_g_long, on=["sh6", "reporter"])
-        else:
-            global_metrics = pd.DataFrame(columns=["sh6", "reporter", "rca_global", "rsca_global"])
-
-        # 2. RCA Bilateral (Especialização por Reporter x Partner x SH6)
-        partners = df_yr["partner"].unique()
-        partner_frames = []
-
-        for prt in partners:
-            df_prt = df_yr[df_yr["partner"] == prt]
-            if df_prt.empty:
-                continue
-
-            pv_p = df_prt.pivot_table(index="sh6", columns="reporter", values="valor", aggfunc="sum", fill_value=0.0)
-            sh6_descs = df_prt.groupby("sh6")["sh6_desc"].first()
-
-            world_rep_p = detect_world_label(pv_p.columns.tolist())
-            if world_rep_p and world_rep_p in pv_p.columns:
-                X_wj_p = pv_p[world_rep_p]
-                X_w_p = float(X_wj_p.sum())
-                reporters_p = [r for r in pv_p.columns if r != world_rep_p]
-            else:
-                X_wj_p = pv_p.sum(axis=1)
-                X_w_p = float(pv_p.values.sum())
-                reporters_p = list(pv_p.columns)
-
-            if not reporters_p:
-                continue
-
-            pv_r_p = pv_p[reporters_p]
-            X_i_p = pv_r_p.sum(axis=0)
-
-            share_pais_p = pv_r_p.div(X_i_p.replace(0, np.nan), axis=1).fillna(0.0)
-            share_mundo_p = (X_wj_p / X_w_p) if X_w_p > 0 else pd.Series(0.0, index=X_wj_p.index)
-
-            rca_p_df = share_pais_p.div(share_mundo_p.replace(0, np.nan), axis=0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
-            rsca_p_df = ((rca_p_df - 1) / (rca_p_df + 1)).fillna(-1.0)
-
-            val_long_p = pv_r_p.stack().rename("valor").reset_index()
-            val_long_p.columns = ["sh6", "reporter", "valor"]
-            rca_long_p = rca_p_df.stack().rename("rca_partner").reset_index()
-            rca_long_p.columns = ["sh6", "reporter", "rca_partner"]
-            rsca_long_p = rsca_p_df.stack().rename("rsca_partner").reset_index()
-            rsca_long_p.columns = ["sh6", "reporter", "rsca_partner"]
-
-            merged_p = val_long_p.merge(rca_long_p, on=["sh6", "reporter"]).merge(rsca_long_p, on=["sh6", "reporter"])
-            merged_p["partner"] = prt
-            merged_p["sh6_desc"] = merged_p["sh6"].map(sh6_descs)
-            merged_p["mundo_valor"] = merged_p["sh6"].map(X_wj_p)
-
-            partner_frames.append(merged_p)
-
-        if partner_frames:
-            yr_out = pd.concat(partner_frames, ignore_index=True)
-            yr_out["ano"] = yr
-            yr_out = yr_out.merge(global_metrics, on=["sh6", "reporter"], how="left")
-            yr_out["rca_global"] = yr_out["rca_global"].fillna(0.0)
-            yr_out["rsca_global"] = yr_out["rsca_global"].fillna(-1.0)
-            year_frames.append(yr_out)
-
-    if not year_frames:
-        return pd.DataFrame(columns=[
-            "ano", "reporter", "partner", "sh6", "sh6_desc", "valor", "mundo_valor",
-            "rca_global", "rsca_global", "rca_partner", "rsca_partner"
-        ])
-
-    out = pd.concat(year_frames, ignore_index=True)
-    return out[[
-        "ano", "reporter", "partner", "sh6", "sh6_desc", "valor", "mundo_valor",
-        "rca_global", "rsca_global", "rca_partner", "rsca_partner"
+    return merged[[
+        "sh6", "sh6_desc", "reporter", "valor", "mundo_valor",
+        "market_share_pct", "rca_global", "rsca_global",
+        "crescimento_mundo_pct", "posicao_estrategica", "ano_inicio", "ano_fim"
     ]]
 
 
@@ -396,18 +398,11 @@ def compute_state_diversification_potentials(
     if brazil_rep_name is None:
         return pd.DataFrame()
 
-    br_metrics = comtrade_metrics[
-        (comtrade_metrics["reporter"] == brazil_rep_name) & (comtrade_metrics["ano"] == year)
-    ].copy()
+    br_metrics = comtrade_metrics[comtrade_metrics["reporter"] == brazil_rep_name].copy()
     if br_metrics.empty:
         return pd.DataFrame()
 
-    advantage = br_metrics.groupby(["sh6", "sh6_desc"], as_index=False).agg(
-        rca=("rca_global", "first"),
-        rsca=("rsca_global", "first"),
-        mundo_valor=("mundo_valor", "sum")
-    )
-    advantage = advantage[advantage["rca"] >= 1.0].copy()
+    advantage = br_metrics[br_metrics["rsca_global"] >= 0.0].copy()
 
     if advantage.empty:
         return pd.DataFrame()
@@ -433,7 +428,11 @@ def compute_state_diversification_potentials(
     grid["valor_fob"] = grid["valor_fob"].fillna(0.0)
     grid["share_local"] = np.where(grid["uf_total"] > 0, grid["valor_fob"] / grid["uf_total"], 0.0)
 
-    adv_slim = advantage[["sh6", "sh6_desc", "rca", "rsca", "mundo_valor"]].rename(columns={"sh6": "sh6_cod"})
+    adv_slim = advantage[[
+        "sh6", "sh6_desc", "rca_global", "rsca_global", "market_share_pct",
+        "crescimento_mundo_pct", "posicao_estrategica", "mundo_valor"
+    ]].rename(columns={"sh6": "sh6_cod", "rca_global": "rca", "rsca_global": "rsca"})
+    
     grid = grid.merge(adv_slim, on="sh6_cod", how="left")
 
     if not desc_map.empty:
@@ -476,7 +475,7 @@ def inject_custom_css():
 
         .metric-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
             gap: 16px;
             margin: 14px 0 28px 0;
         }
@@ -500,14 +499,14 @@ def inject_custom_css():
         }
 
         .metric-card .m-value {
-            font-size: 1.95rem;
+            font-size: 1.85rem;
             font-weight: 800;
             line-height: 1.15;
             letter-spacing: -0.025em;
         }
 
         .metric-card .m-label {
-            font-size: 0.74rem;
+            font-size: 0.72rem;
             font-weight: 700;
             margin-top: 6px;
             text-transform: uppercase;
@@ -565,6 +564,8 @@ PASTEL_COLORS = {
     "amber_bg": "rgba(254, 243, 199, 0.75)",
     "blue_main": "#3b82f6",
     "blue_bg": "rgba(239, 246, 255, 0.75)",
+    "purple_main": "#8b5cf6",
+    "purple_bg": "rgba(245, 243, 255, 0.75)",
     "red_main": "#ef4444",
     "red_bg": "rgba(254, 242, 242, 0.75)",
     "gray_main": "#9ca3af",
@@ -582,7 +583,7 @@ st.sidebar.title("🌎 Navegação")
 PAGE = st.sidebar.radio(
     "Selecione o Módulo:",
     [
-        "📊 RCA/RSCA Global (UN Comtrade)",
+        "📊 Indicadores Oficiais de Competitividade (UN Comtrade)",
         "🇧🇷 Cruzamento Nacional (ComexStat x Comtrade)",
         "🗺️ Potencial de Diversificação por Estado (UF)",
     ],
@@ -678,10 +679,10 @@ if "raw_comtrade" in st.session_state:
 # 7. MÓDULOS DA APLICAÇÃO
 # ==============================================================================
 
-# --- PÁGINA 1: UN COMTRADE RCA / RSCA GLOBAL & BILATERAL ---
+# --- PÁGINA 1: UN COMTRADE - INDICADORES OFICIAIS SEPARADOS ---
 def page_comtrade_global():
-    st.title("📊 Análise de RCA e RSCA (UN Comtrade)")
-    st.caption("Análise de Vantagem Comparativa Revelada (Balassa) e Simétrica (Laursen) tanto Global quanto Bilateral por Parceiro Comercial.")
+    st.title("📊 Indicadores Oficiais de Competitividade Internacional")
+    st.caption("Metodologia Institucional Padrão: RCA (Balassa) e RSCA (Laursen) consolidados em SH6, integrados ao Market Share Global e ao Dinamismo da Demanda Mundial.")
 
     if "comtrade_tidy" not in st.session_state:
         st.info("👈 Por favor, carregue e processe o arquivo do UN Comtrade na barra lateral.")
@@ -706,219 +707,167 @@ def page_comtrade_global():
         st.warning("Não há dados suficientes para o intervalo de anos selecionado.")
         return
 
-    f_col1, f_col2, f_col3, f_col4 = st.columns(4)
+    f_col1, f_col2, f_col3 = st.columns(3)
     with f_col1:
-        reps = st.multiselect("Filtrar por Reporter (País):", sorted(df_metrics["reporter"].unique()))
+        reps = st.multiselect("Filtrar por País (Declarante):", sorted(df_metrics["reporter"].unique()))
     with f_col2:
-        prts = st.multiselect("Filtrar por Partner (Parceiro):", sorted(df_metrics["partner"].unique()))
+        sh6s = st.multiselect("Filtrar por Código SH6:", sorted(df_metrics["sh6"].unique()))
     with f_col3:
-        sh6s = st.multiselect("Filtrar por SH6:", sorted(df_metrics["sh6"].unique()))
-    with f_col4:
-        rca_mode = st.radio("Métrica para Análise:", ["RCA Global", "RCA Bilateral (Partner)"], horizontal=True)
-
-    rca_col = "rca_global" if rca_mode == "RCA Global" else "rca_partner"
-    rsca_col = "rsca_global" if rca_mode == "RCA Global" else "rsca_partner"
+        only_adv = st.checkbox("Apenas Produtos com Vantagem Comparativa (RSCA ≥ 0.0 / RCA ≥ 1.0)", value=False)
 
     filtered_df = df_metrics.copy()
     if reps:
         filtered_df = filtered_df[filtered_df["reporter"].isin(reps)]
-    if prts:
-        filtered_df = filtered_df[filtered_df["partner"].isin(prts)]
     if sh6s:
         filtered_df = filtered_df[filtered_df["sh6"].isin(sh6s)]
+    if only_adv:
+        filtered_df = filtered_df[filtered_df["rsca_global"] >= 0.0]
 
-    # --- CÁLCULO DAS MÉTRICAS ---
-    media_rca = filtered_df[rca_col].mean() if not filtered_df.empty else 0.0
-    media_rsca = filtered_df[rsca_col].mean() if not filtered_df.empty else 0.0
+    # --- CÁLCULO SEPARADO DOS INDICADORES TIPO KPI ---
+    media_rca = filtered_df["rca_global"].mean() if not filtered_df.empty else 0.0
+    media_rsca = filtered_df["rsca_global"].mean() if not filtered_df.empty else 0.0
+    media_ms = filtered_df["market_share_pct"].mean() if not filtered_df.empty else 0.0
+    media_dinamismo = filtered_df["crescimento_mundo_pct"].mean() if not filtered_df.empty else 0.0
+    n_competitivos = (filtered_df["rsca_global"] >= 0.0).sum() if not filtered_df.empty else 0
 
-    if rca_mode == "RCA Global":
-        sh6_gt_1 = filtered_df[filtered_df["rca_global"] > 1.0]["sh6"].nunique() if not filtered_df.empty else 0
-        sh6_lt_1 = filtered_df[filtered_df["rca_global"] < 1.0]["sh6"].nunique() if not filtered_df.empty else 0
-        paises_unicos = filtered_df["partner"].nunique() if not filtered_df.empty else 0
-        label_paises = "Parceiros Destino"
-    else:
-        sh6_gt_1 = (filtered_df["rca_partner"] > 1.0).sum() if not filtered_df.empty else 0
-        sh6_lt_1 = (filtered_df["rca_partner"] < 1.0).sum() if not filtered_df.empty else 0
-        paises_unicos = filtered_df[filtered_df["rca_partner"] > 1.0]["partner"].nunique() if not filtered_df.empty else 0
-        label_paises = "Parceiros (RCA > 1)"
-
-    # --- RENDERIZAÇÃO DOS CARTÕES PASTEIS ---
+    # --- CARTÕES DE INDICADORES SEPARADOS ---
     html_stats = f"""
     <div class="metric-grid">
         <div class="metric-card" style="background: rgba(239, 246, 255, 0.85); border-color: rgba(59, 130, 246, 0.35);">
             <div class="m-value" style="color: #2563eb;">{format_num(media_rca, 2)}</div>
-            <div class="m-label">Média {rca_mode}</div>
+            <div class="m-label">1. RCA Médio (Balassa)</div>
         </div>
         <div class="metric-card" style="background: rgba(236, 253, 245, 0.85); border-color: rgba(16, 185, 129, 0.35);">
             <div class="m-value" style="color: #059669;">{format_num(media_rsca, 2)}</div>
-            <div class="m-label">Média RSCA Selecionado</div>
-        </div>
-        <div class="metric-card" style="background: rgba(240, 253, 244, 0.85); border-color: rgba(34, 197, 94, 0.35);">
-            <div class="m-value" style="color: #16a34a;">{sh6_gt_1:,}</div>
-            <div class="m-label">Produtos/Linhas ({rca_mode} > 1)</div>
-        </div>
-        <div class="metric-card" style="background: rgba(254, 242, 242, 0.85); border-color: rgba(239, 68, 68, 0.35);">
-            <div class="m-value" style="color: #dc2626;">{sh6_lt_1:,}</div>
-            <div class="m-label">Produtos/Linhas ({rca_mode} < 1)</div>
+            <div class="m-label">2. RSCA Médio (Simétrico)</div>
         </div>
         <div class="metric-card" style="background: rgba(245, 243, 255, 0.85); border-color: rgba(139, 92, 246, 0.35);">
-            <div class="m-value" style="color: #7c3aed;">{paises_unicos:,}</div>
-            <div class="m-label">{label_paises}</div>
+            <div class="m-value" style="color: #7c3aed;">{format_num(media_ms, 2)}%</div>
+            <div class="m-label">3. Market Share Médio</div>
+        </div>
+        <div class="metric-card" style="background: rgba(254, 243, 199, 0.85); border-color: rgba(245, 158, 11, 0.35);">
+            <div class="m-value" style="color: #d97706;">{format_num(media_dinamismo, 2)}%</div>
+            <div class="m-label">4. Dinamismo Mundial Médio</div>
+        </div>
+        <div class="metric-card" style="background: rgba(240, 253, 244, 0.85); border-color: rgba(34, 197, 94, 0.35);">
+            <div class="m-value" style="color: #16a34a;">{n_competitivos:,}</div>
+            <div class="m-label">Produtos Competitivos (RSCA ≥ 0)</div>
         </div>
     </div>
     """
     st.markdown(html_stats, unsafe_allow_html=True)
 
-    st.subheader("Resultados Detalhados (Global e Bilateral por Partner)")
+    st.subheader("📋 Tabela Consolidada de Indicadores Individuais por SH6")
 
     st.dataframe(
         filtered_df,
         column_config={
-            "valor": st.column_config.NumberColumn("Valor Exportado (US$)", format="$ %,.2f"),
-            "mundo_valor": st.column_config.NumberColumn("Mundo Valor (US$)", format="$ %,.2f"),
-            "rca_global": st.column_config.NumberColumn("RCA Global", format="%.4f"),
-            "rsca_global": st.column_config.NumberColumn("RSCA Global", format="%.4f"),
-            "rca_partner": st.column_config.NumberColumn("RCA por Partner", format="%.4f"),
-            "rsca_partner": st.column_config.NumberColumn("RSCA por Partner", format="%.4f"),
-            "ano": st.column_config.NumberColumn("Ano", format="%d"),
-            "partner": "Parceiro Comercial",
+            "sh6": "Código SH6",
+            "sh6_desc": "Descrição do Produto",
             "reporter": "País Declarante",
+            "valor": st.column_config.NumberColumn("Valor Exportado (US$)", format="$ %,.2f"),
+            "mundo_valor": st.column_config.NumberColumn("Demanda Global (US$)", format="$ %,.2f"),
+            "rca_global": st.column_config.NumberColumn("RCA Global (Balassa)", format="%.4f"),
+            "rsca_global": st.column_config.NumberColumn("RSCA Global (Simétrico)", format="%.4f"),
+            "market_share_pct": st.column_config.NumberColumn("Market Share Global (%)", format="%.2f%%"),
+            "crescimento_mundo_pct": st.column_config.NumberColumn("Dinamismo Mundial (%)", format="%.2f%%"),
+            "posicao_estrategica": "Matriz Trimétrica / CEPAL",
         },
-        height=350,
+        height=380,
     )
 
     st.divider()
 
-    # --- GRÁFICOS DE DISPERSÃO ---
-    st.subheader(f"📈 Dispersão do {rca_mode} e RSCA por Valor Exportado")
+    # --- VISUALIZAÇÕES SEPARADAS DOS 4 INDICADORES CHAVE ---
+    st.subheader("📌 Análise Individual e Gráfica dos Indicadores")
 
-    chart_col1, chart_col2 = st.columns(2)
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "1. Especialização (RSCA)",
+        "2. Inserção de Mercado (Market Share)",
+        "3. Dinamismo da Demanda Global",
+        "4. Matriz Trimétrica CEPAL/MAGIC"
+    ])
 
-    with chart_col1:
-        st.markdown(f"#### **Dispersão do {rca_mode}**")
-        fig_rca = px.scatter(
-            filtered_df,
-            x="valor",
-            y=rca_col,
-            color="partner",
-            hover_data=["sh6", "sh6_desc", "reporter"],
-            title=f"Dispersão: {rca_mode} x Valor Exportado",
-            labels={
-                "valor": "Valor Exportado (US$)",
-                rca_col: rca_mode,
-                "partner": "Parceiro",
-            },
-            template="plotly_white",
-        )
-        fig_rca.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-        fig_rca.add_hline(
-            y=1.0,
-            line_dash="dash",
-            line_color=PASTEL_COLORS["blue_main"],
-            annotation_text="Limiar de Vantagem (RCA = 1)",
-        )
-        st.plotly_chart(fig_rca, width="stretch")
-
-    with chart_col2:
-        st.markdown(f"#### **Dispersão do RSCA ({rca_mode})**")
+    with tab1:
+        st.markdown("#### **Índice de Vantagem Comparativa Revelada Simétrica (RSCA Global)**")
+        st.caption("Mede o grau de especialização produtiva do país no produto SH6. Varia de -1,0 (desvantagem) a +1,0 (vantagem).")
+        
         fig_rsca = px.scatter(
             filtered_df,
             x="valor",
-            y=rsca_col,
-            color="partner",
-            hover_data=["sh6", "sh6_desc", "reporter"],
-            title=f"Dispersão: RSCA ({rca_mode}) x Valor Exportado",
-            labels={
-                "valor": "Valor Exportado (US$)",
-                rsca_col: f"RSCA ({rca_mode})",
-                "partner": "Parceiro",
-            },
+            y="rsca_global",
+            color="reporter",
+            size="mundo_valor",
+            hover_data=["sh6", "sh6_desc"],
+            title="RSCA Global por Valor Exportado",
+            labels={"valor": "Valor Exportado pelo País (US$)", "rsca_global": "RSCA Global", "reporter": "País"},
             template="plotly_white",
         )
         fig_rsca.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-        fig_rsca.add_hline(
-            y=0.0,
-            line_dash="dash",
-            line_color=PASTEL_COLORS["red_main"],
-            annotation_text="Ponto Neutro (RSCA = 0)",
-        )
+        fig_rsca.add_hline(y=0.0, line_dash="dash", line_color=PASTEL_COLORS["red_main"], annotation_text="Limiar de Vantagem (RSCA = 0.0)")
         st.plotly_chart(fig_rsca, width="stretch")
 
-    if len(years_range) > 1:
-        st.divider()
-        st.subheader("📉 Evolução Temporal Separada (RCA e RSCA)")
-
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            trend_reporter = st.selectbox("País:", sorted(df_metrics["reporter"].unique()), key="trend_rep")
-        with c2:
-            trend_partner = st.selectbox(
-                "Parceiro:",
-                sorted(df_metrics[df_metrics["reporter"] == trend_reporter]["partner"].unique()),
-                key="trend_prt",
-            )
-        opts_sh6 = sorted(
-            df_metrics[
-                (df_metrics["reporter"] == trend_reporter) & (df_metrics["partner"] == trend_partner)
-            ]["sh6"].unique()
+    with tab2:
+        st.markdown("#### **Participação de Mercado Global (Market Share %)**")
+        st.caption("Percentual de participação das exportações do país dentro da demanda/exportação total mundial do produto SH6.")
+        
+        fig_ms = px.scatter(
+            filtered_df,
+            x="valor",
+            y="market_share_pct",
+            color="reporter",
+            size="rca_global",
+            hover_data=["sh6", "sh6_desc"],
+            title="Market Share Global (%) por Valor Exportado",
+            labels={"valor": "Valor Exportado (US$)", "market_share_pct": "Market Share Global (%)", "reporter": "País"},
+            template="plotly_white",
         )
-        with c3:
-            trend_sh6 = st.selectbox("Produto (SH6):", opts_sh6, key="trend_sh6")
+        fig_ms.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+        st.plotly_chart(fig_ms, width="stretch")
 
-        trend_df = df_metrics[
-            (df_metrics["reporter"] == trend_reporter)
-            & (df_metrics["partner"] == trend_partner)
-            & (df_metrics["sh6"] == trend_sh6)
-        ].sort_values("ano")
+    with tab3:
+        st.markdown("#### **Dinamismo da Demanda Mundial (Taxa de Crescimento Global %)**")
+        st.caption("Variação percentual ou CAGR da demanda importadora/exportadora global do produto no período selecionado.")
+        
+        fig_din = px.scatter(
+            filtered_df,
+            x="mundo_valor",
+            y="crescimento_mundo_pct",
+            color="reporter",
+            hover_data=["sh6", "sh6_desc"],
+            title="Dinamismo da Demanda Global por Tamanho de Mercado",
+            labels={"mundo_valor": "Demanda Global do Produto (US$)", "crescimento_mundo_pct": "Crescimento Mundial (%)", "reporter": "País"},
+            template="plotly_white",
+        )
+        fig_din.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+        fig_din.add_hline(y=0.0, line_dash="dash", line_color=PASTEL_COLORS["amber_main"], annotation_text="Crescimento Neutro (0.0%)")
+        st.plotly_chart(fig_din, width="stretch")
 
-        if not trend_df.empty:
-            t_col1, t_col2 = st.columns(2)
-
-            with t_col1:
-                fig_trend_rca = px.line(
-                    trend_df,
-                    x="ano",
-                    y=rca_col,
-                    markers=True,
-                    title=f"Evolução do {rca_mode} — {trend_reporter} x {trend_partner} — SH6 {trend_sh6}",
-                    labels={rca_col: rca_mode, "ano": "Ano"},
-                    template="plotly_white",
-                )
-                fig_trend_rca.update_traces(line_color=PASTEL_COLORS["blue_main"])
-                fig_trend_rca.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-                fig_trend_rca.add_hline(
-                    y=1.0,
-                    line_dash="dot",
-                    line_color=PASTEL_COLORS["amber_main"],
-                    annotation_text="RCA = 1.0",
-                )
-                st.plotly_chart(fig_trend_rca, width="stretch")
-
-            with t_col2:
-                fig_trend_rsca = px.line(
-                    trend_df,
-                    x="ano",
-                    y=rsca_col,
-                    markers=True,
-                    title=f"Evolução do RSCA ({rca_mode}) — {trend_reporter} x {trend_partner} — SH6 {trend_sh6}",
-                    labels={rsca_col: f"RSCA ({rca_mode})", "ano": "Ano"},
-                    template="plotly_white",
-                )
-                fig_trend_rsca.update_traces(line_color=PASTEL_COLORS["green_main"])
-                fig_trend_rsca.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-                fig_trend_rsca.add_hline(
-                    y=0.0,
-                    line_dash="dot",
-                    line_color=PASTEL_COLORS["red_main"],
-                    annotation_text="RSCA = 0.0",
-                )
-                st.plotly_chart(fig_trend_rsca, width="stretch")
+    with tab4:
+        st.markdown("#### **Matriz Trimétrica de Posicionamento Estratégico (CEPAL / MAGIC)**")
+        st.caption("Cruzamento entre o Dinamismo Mundial (Eixo Y) e o RSCA do País (Eixo X) para priorização de políticas públicas.")
+        
+        fig_matrix = px.scatter(
+            filtered_df,
+            x="rsca_global",
+            y="crescimento_mundo_pct",
+            color="posicao_estrategica",
+            size="market_share_pct",
+            hover_data=["sh6", "sh6_desc", "reporter"],
+            title="Matriz Trimétrica: RSCA vs Dinamismo Mundial (Tamanho = Market Share %)",
+            labels={"rsca_global": "RSCA Global (Especialização)", "crescimento_mundo_pct": "Dinamismo Mundial (%)", "posicao_estrategica": "Posição"},
+            template="plotly_white",
+        )
+        fig_matrix.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+        fig_matrix.add_vline(x=0.0, line_dash="dash", line_color="#9ca3af")
+        fig_matrix.add_hline(y=0.0, line_dash="dash", line_color="#9ca3af")
+        st.plotly_chart(fig_matrix, width="stretch")
 
 
 # --- PÁGINA 2: CRUZAMENTO BRASIL COMEXSTAT X COMTRADE ---
 def page_comexstat_cross():
     st.title("🇧🇷 Cruzamento das Exportações do Brasil com Competitividade Global")
-    st.caption("Cruzamento entre a pauta detalhada do ComexStat e os índices globais de RCA/RSCA.")
+    st.caption("Integração da pauta detalhada do ComexStat aos indicadores oficiais consolidados do Comtrade.")
 
     if "comexstat" not in st.session_state or "comtrade_tidy" not in st.session_state:
         st.warning("⚠️ É necessário carregar AMBOS os arquivos (ComexStat Brasil e UN Comtrade) na barra lateral.")
@@ -947,15 +896,9 @@ def page_comexstat_cross():
         st.error("Não foi encontrado um reporter 'Brazil'/'Brasil' nos dados do Comtrade processados.")
         return
 
-    br_ct = (
-        ct_metrics[ct_metrics["reporter"] == brazil_rep]
-        .groupby("sh6", as_index=False)
-        .agg(
-            rca=("rca_global", "first"),
-            rsca=("rsca_global", "first"),
-            mundo_valor=("mundo_valor", "sum"),
-        )
-    )
+    br_ct = ct_metrics[ct_metrics["reporter"] == brazil_rep][[
+        "sh6", "rca_global", "rsca_global", "market_share_pct", "crescimento_mundo_pct", "posicao_estrategica", "mundo_valor"
+    ]].copy()
 
     merged = pd.merge(
         cs[cs["ano"] == selected_year],
@@ -964,8 +907,10 @@ def page_comexstat_cross():
         right_on="sh6",
         how="left",
     )
-    merged["rca"] = merged["rca"].fillna(0)
-    merged["rsca"] = merged["rsca"].fillna(-1)
+    merged["rca_global"] = merged["rca_global"].fillna(0)
+    merged["rsca_global"] = merged["rsca_global"].fillna(-1)
+    merged["market_share_pct"] = merged["market_share_pct"].fillna(0)
+    merged["crescimento_mundo_pct"] = merged["crescimento_mundo_pct"].fillna(0)
 
     st.subheader("🔍 Filtros de Segmentação da Pauta Exportadora")
     col1, col2, col3 = st.columns(3)
@@ -1009,27 +954,27 @@ def page_comexstat_cross():
         df_f = df_f[df_f["cgce2_desc"].isin(f_cgce2)]
 
     val_tot = df_f["valor_fob"].sum()
-    produtos_vantagem = df_f[df_f["rca"] >= 1.0]["sh6_cod"].nunique()
+    produtos_vantagem = df_f[df_f["rsca_global"] >= 0.0]["sh6_cod"].nunique()
 
     html_stats = f"""
-    <div class="stat-row">
-        <div class="stat-item">
-            <div class="stat-value">{format_usd(val_tot)}</div>
-            <div class="stat-label">Valor Total Exportado (FOB)</div>
+    <div class="metric-grid">
+        <div class="metric-card" style="background: rgba(239, 246, 255, 0.85); border-color: rgba(59, 130, 246, 0.35);">
+            <div class="m-value" style="color: #2563eb;">{format_usd(val_tot)}</div>
+            <div class="m-label">Valor Total Exportado (FOB)</div>
         </div>
-        <div class="stat-item">
-            <div class="stat-value">{df_f['sh6_cod'].nunique():,}</div>
-            <div class="stat-label">Total de Produtos SH6</div>
+        <div class="metric-card" style="background: rgba(245, 243, 255, 0.85); border-color: rgba(139, 92, 246, 0.35);">
+            <div class="m-value" style="color: #7c3aed;">{df_f['sh6_cod'].nunique():,}</div>
+            <div class="m-label">Total de Produtos SH6</div>
         </div>
-        <div class="stat-item">
-            <div class="stat-value" style="color:{PASTEL_COLORS['green_main']};">{produtos_vantagem:,}</div>
-            <div class="stat-label">Produtos com RCA Global ≥ 1</div>
+        <div class="metric-card" style="background: rgba(236, 253, 245, 0.85); border-color: rgba(16, 185, 129, 0.35);">
+            <div class="m-value" style="color: #059669;">{produtos_vantagem:,}</div>
+            <div class="m-label">Produtos Competitivos (RSCA ≥ 0)</div>
         </div>
     </div>
     """
     st.markdown(html_stats, unsafe_allow_html=True)
 
-    st.subheader("📊 Distribuição de Exportação x Competitividade por Setor")
+    st.subheader("📊 Distribuição dos Indicadores Separados por Setor")
     group_opt = st.selectbox(
         "Agrupar Visualização por:",
         ["CUCI Grupo", "ISIC Divisão", "ISIC Seção", "CGCE Nível 1", "CGCE Nível 2"],
@@ -1049,8 +994,10 @@ def page_comexstat_cross():
             df_f.groupby(selected_col)
             .agg(
                 Valor_FOB=("valor_fob", "sum"),
-                RCA_Medio=("rca", "mean"),
-                RSCA_Medio=("rsca", "mean"),
+                RCA_Medio=("rca_global", "mean"),
+                RSCA_Medio=("rsca_global", "mean"),
+                Market_Share_Medio=("market_share_pct", "mean"),
+                Dinamismo_Medio=("crescimento_mundo_pct", "mean"),
                 N_Produtos=("sh6_cod", "nunique"),
             )
             .reset_index()
@@ -1060,25 +1007,6 @@ def page_comexstat_cross():
         col_sec1, col_sec2 = st.columns(2)
 
         with col_sec1:
-            fig_sec_rca = px.bar(
-                agg_sector.head(15),
-                x="Valor_FOB",
-                y=selected_col,
-                orientation="h",
-                color="RCA_Medio",
-                color_continuous_scale=["#3b82f6", "#10b981"],
-                title=f"Top 15 Setores por Valor e RCA Médio ({group_opt})",
-                labels={
-                    "Valor_FOB": "Valor FOB (US$)",
-                    selected_col: "Setor",
-                    "RCA_Medio": "RCA Médio",
-                },
-                template="plotly_white",
-            )
-            fig_sec_rca.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-            st.plotly_chart(fig_sec_rca, width="stretch")
-
-        with col_sec2:
             fig_sec_rsca = px.bar(
                 agg_sector.head(15),
                 x="Valor_FOB",
@@ -1087,15 +1015,26 @@ def page_comexstat_cross():
                 color="RSCA_Medio",
                 color_continuous_scale=["#ef4444", "#f59e0b", "#10b981"],
                 title=f"Top 15 Setores por Valor e RSCA Médio ({group_opt})",
-                labels={
-                    "Valor_FOB": "Valor FOB (US$)",
-                    selected_col: "Setor",
-                    "RSCA_Medio": "RSCA Médio",
-                },
+                labels={"Valor_FOB": "Valor FOB (US$)", selected_col: "Setor", "RSCA_Medio": "RSCA Médio"},
                 template="plotly_white",
             )
             fig_sec_rsca.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
             st.plotly_chart(fig_sec_rsca, width="stretch")
+
+        with col_sec2:
+            fig_sec_ms = px.bar(
+                agg_sector.head(15),
+                x="Valor_FOB",
+                y=selected_col,
+                orientation="h",
+                color="Market_Share_Medio",
+                color_continuous_scale=["#eff6ff", "#3b82f6", "#1d4ed8"],
+                title=f"Top 15 Setores por Valor e Market Share Médio ({group_opt})",
+                labels={"Valor_FOB": "Valor FOB (US$)", selected_col: "Setor", "Market_Share_Medio": "Market Share Médio (%)"},
+                template="plotly_white",
+            )
+            fig_sec_ms.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig_sec_ms, width="stretch")
 
         st.dataframe(
             agg_sector,
@@ -1103,6 +1042,8 @@ def page_comexstat_cross():
                 "Valor_FOB": st.column_config.NumberColumn("Valor FOB (US$)", format="$ %,.2f"),
                 "RCA_Medio": st.column_config.NumberColumn("RCA Médio", format="%.2f"),
                 "RSCA_Medio": st.column_config.NumberColumn("RSCA Médio", format="%.2f"),
+                "Market_Share_Medio": st.column_config.NumberColumn("Market Share Médio (%)", format="%.2f%%"),
+                "Dinamismo_Medio": st.column_config.NumberColumn("Dinamismo Médio (%)", format="%.2f%%"),
                 "N_Produtos": st.column_config.NumberColumn("Produtos SH6", format="%d"),
             },
         )
@@ -1113,7 +1054,7 @@ def page_comexstat_cross():
 # --- PÁGINA 3: POTENCIAL DE DIVERSIFICAÇÃO POR ESTADO (UF) ---
 def page_state_diversification():
     st.title("🗺️ Potencial de Diversificação Exportadora por Estado (UF)")
-    st.caption("Cruzamento subnacional para identificar produtos com alta competitividade nacional (RCA ≥ 1) subaproveitados nos estados.")
+    st.caption("Cruzamento subnacional com a base de competitividade oficial (RSCA ≥ 0, Market Share e Dinamismo Mundial).")
 
     if "comexstat_uf" not in st.session_state or "comtrade_tidy" not in st.session_state:
         st.warning("⚠️ É necessário carregar a planilha do ComexStat por Estado (UF) e o UN Comtrade.")
@@ -1137,10 +1078,7 @@ def page_state_diversification():
     df_potencial = compute_state_diversification_potentials(cs_uf, ct_metrics, selected_year)
 
     if df_potencial.empty:
-        st.error(
-            "Não foi possível calcular o potencial com os dados fornecidos. Verifique se o Brasil "
-            "aparece como reporter no Comtrade e se há produtos com RCA ≥ 1 no ano selecionado."
-        )
+        st.error("Não foi possível calcular o potencial com os dados fornecidos. Verifique se o Brasil possui produtos com RSCA ≥ 0 no ano selecionado.")
         return
 
     st.subheader("🧭 Radar de Oportunidades Estaduais (Matriz de Vantagem & Presença)")
@@ -1160,12 +1098,12 @@ def page_state_diversification():
                 <div class="qc-title" style="color:{PASTEL_COLORS['green_main']};">
                     <span class="qc-dot" style="background:{PASTEL_COLORS['green_main']};"></span>Alta Oportunidade Local
                 </div>
-                <div class="qc-desc">Combinações Estado x Produto em que o Brasil possui vantagem comparativa global (RCA ≥ 1), mas o estado ainda não exporta o produto.</div>
+                <div class="qc-desc">Produtos em que o Brasil possui vantagem comparativa oficial (RSCA ≥ 0), mas o estado ainda não realiza exportações.</div>
             </div>
             <div class="qc-bottom">
                 <div>
                     <div class="qc-count">{n_alto_potencial:,}</div>
-                    <div class="qc-count-label">produtos-chave (média nacional)</div>
+                    <div class="qc-count-label">produtos-chave nacionais</div>
                 </div>
                 <div>
                     <div class="qc-value">{format_usd(val_mercado_oportunidade)}</div>
@@ -1179,7 +1117,7 @@ def page_state_diversification():
                 <div class="qc-title" style="color:{PASTEL_COLORS['blue_main']};">
                     <span class="qc-dot" style="background:{PASTEL_COLORS['blue_main']};"></span>Vantagem Comparativa Nacional
                 </div>
-                <div class="qc-desc">Total de produtos no portfólio brasileiro com alto índice de especialização e inserção no comércio internacional, avaliados em todos os estados.</div>
+                <div class="qc-desc">Produtos do portfólio brasileiro com alto índice de especialização e inserção no comércio internacional.</div>
             </div>
             <div class="qc-bottom">
                 <div>
@@ -1187,7 +1125,7 @@ def page_state_diversification():
                     <div class="qc-count-label">produtos competitivos</div>
                 </div>
                 <div>
-                    <div class="qc-value">RCA ≥ 1.0</div>
+                    <div class="qc-value">RSCA ≥ 0.0</div>
                     <div class="qc-pill" style="background:rgba(59, 130, 246, 0.15); color:{PASTEL_COLORS['blue_main']};">Base Brasil</div>
                 </div>
             </div>
@@ -1217,32 +1155,15 @@ def page_state_diversification():
         color="Exportacao_Atual_FOB",
         color_continuous_scale=["#eff6ff", "#3b82f6", "#1d4ed8"],
         title="Estados com Maior Potencial de Diversificação",
-        labels={
-            "Score_Potencial_Total": "Score de Potencial",
-            "uf": "Estado",
-            "Exportacao_Atual_FOB": "Exportação Atual (US$)",
-        },
+        labels={"Score_Potencial_Total": "Score de Potencial", "uf": "Estado", "Exportacao_Atual_FOB": "Exportação Atual (US$)"},
         template="plotly_white",
     )
-    fig_uf_rank.update_layout(
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        yaxis=dict(categoryorder="total ascending"),
-    )
+    fig_uf_rank.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", yaxis=dict(categoryorder="total ascending"))
     st.plotly_chart(fig_uf_rank, width="stretch")
-
-    st.dataframe(
-        rank_uf,
-        column_config={
-            "Score_Potencial_Total": st.column_config.NumberColumn("Score de Potencial Total", format="%.2f"),
-            "Exportacao_Atual_FOB": st.column_config.NumberColumn("Exportação Atual (US$)", format="$ %,.2f"),
-            "Produtos_Nao_Explorados": st.column_config.NumberColumn("Produtos Não Explorados", format="%d"),
-        },
-    )
 
     st.divider()
 
-    st.subheader("🔍 Detalhamento e Segmentação por Estado (UF)")
+    st.subheader("🔍 Detalhamento e Indicadores Separados por Estado (UF)")
 
     col_sel1, col_sel2, col_sel3, col_sel4 = st.columns(4)
     with col_sel1:
@@ -1251,11 +1172,7 @@ def page_state_diversification():
     df_uf_filtered = df_potencial[df_potencial["uf"] == uf_target]
 
     with col_sel2:
-        cuci_options = (
-            sorted(df_uf_filtered["cuci_desc"].dropna().unique())
-            if "cuci_desc" in df_uf_filtered.columns
-            else []
-        )
+        cuci_options = sorted(df_uf_filtered["cuci_desc"].dropna().unique()) if "cuci_desc" in df_uf_filtered.columns else []
         cuci_target = st.multiselect("Filtrar por CUCI Grupo:", cuci_options)
     with col_sel3:
         sh6_options = sorted(df_uf_filtered["sh6_cod"].dropna().unique())
@@ -1273,45 +1190,15 @@ def page_state_diversification():
 
     st.markdown(f"### Oportunidades Prioritárias para **{uf_target}**")
 
-    top_n = df_uf_seg.sort_values("potencial_score", ascending=False).head(15)
-    if not top_n.empty:
-        label_col = (
-            "sh6_desc"
-            if "sh6_desc" in top_n.columns and top_n["sh6_desc"].notna().any()
-            else "sh6_cod"
-        )
-        color_col = (
-            "cuci_desc"
-            if "cuci_desc" in top_n.columns and top_n["cuci_desc"].notna().any()
-            else None
-        )
-        fig_top = px.bar(
-            top_n,
-            x="potencial_score",
-            y=label_col,
-            orientation="h",
-            color=color_col,
-            title=f"Top produtos por potencial de diversificação — {uf_target}",
-            labels={
-                "potencial_score": "Score de Potencial",
-                label_col: "Produto (SH6)",
-                "cuci_desc": "CUCI Grupo",
-            },
-            template="plotly_white",
-        )
-        fig_top.update_layout(
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            yaxis=dict(categoryorder="total ascending"),
-        )
-        st.plotly_chart(fig_top, width="stretch")
-
     disp_cols = [
         "sh6_cod",
         "sh6_desc",
         "cuci_desc",
         "rca",
         "rsca",
+        "market_share_pct",
+        "crescimento_mundo_pct",
+        "posicao_estrategica",
         "valor_fob",
         "share_local",
         "potencial_score",
@@ -1320,15 +1207,20 @@ def page_state_diversification():
     available_disp_cols = [c for c in disp_cols if c in df_uf_seg.columns]
 
     st.dataframe(
-        df_uf_seg[available_disp_cols]
-        .sort_values("potencial_score", ascending=False)
-        .head(50),
+        df_uf_seg[available_disp_cols].sort_values("potencial_score", ascending=False).head(50),
         column_config={
-            "rca": st.column_config.NumberColumn("RCA Médio", format="%.2f"),
-            "rsca": st.column_config.NumberColumn("RSCA Médio", format="%.2f"),
-            "valor_fob": st.column_config.NumberColumn("Valor FOB (US$)", format="$ %,.2f"),
+            "sh6_cod": "Código SH6",
+            "sh6_desc": "Descrição Produto",
+            "cuci_desc": "CUCI Grupo",
+            "rca": st.column_config.NumberColumn("RCA Global", format="%.2f"),
+            "rsca": st.column_config.NumberColumn("RSCA Global", format="%.2f"),
+            "market_share_pct": st.column_config.NumberColumn("Market Share Global (%)", format="%.2f%%"),
+            "crescimento_mundo_pct": st.column_config.NumberColumn("Dinamismo Mundial (%)", format="%.2f%%"),
+            "posicao_estrategica": "Matriz CEPAL",
+            "valor_fob": st.column_config.NumberColumn("Exportado no Estado (US$)", format="$ %,.2f"),
             "share_local": st.column_config.NumberColumn("Participação Local", format="%.2%%"),
             "potencial_score": st.column_config.NumberColumn("Score Potencial", format="%.2f"),
+            "ja_exportado": "Exporta Atualmente?",
         },
         height=420,
     )
@@ -1338,7 +1230,7 @@ def page_state_diversification():
 # 8. ROTEADOR DE PÁGINAS
 # ==============================================================================
 
-if PAGE == "📊 RCA/RSCA Global (UN Comtrade)":
+if PAGE == "📊 Indicadores Oficiais de Competitividade (UN Comtrade)":
     page_comtrade_global()
 elif PAGE == "🇧🇷 Cruzamento Nacional (ComexStat x Comtrade)":
     page_comexstat_cross()
