@@ -2,7 +2,7 @@
 """
 ==============================================================================
  SISTEMA DE ANÁLISE DE DIVERSIFICAÇÃO DAS EXPORTAÇÕES BRASILEIRAS
- (Glassmorfismo Cupertino) — v7.0 (RCA Consolidado Global x Bilateral)
+ (Glassmorfismo Cupertino) — v8.0 (Lógica de Importação UN Comtrade)
 ==============================================================================
 """
 
@@ -208,7 +208,7 @@ def standardize_comexstat(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ==============================================================================
-# 3. PADRONIZAÇÃO COMTRADE
+# 3. PADRONIZAÇÃO COMTRADE (LÓGICA DE IMPORTAÇÃO)
 # ==============================================================================
 
 def standardize_comtrade(
@@ -225,8 +225,8 @@ def standardize_comtrade(
     d = df.copy()
     cols = {
         year_col: "ano",
-        reporter_col: "reporter",
-        partner_col: "partner",
+        reporter_col: "reporter", # País Imprtador / Declarante
+        partner_col: "partner",   # País Exportador / Parceiro
         sh6_col: "sh6",
         value_col: "valor",
     }
@@ -257,14 +257,17 @@ def standardize_comtrade(
 
 
 # ==============================================================================
-# 4. MOTOR DE CÁLCULO DUAL (SISTEMA DE DUAS CAMADAS: GLOBAL SH6 x BILATERAL)
+# 4. MOTOR DE CÁLCULO DUAL (SISTEMA BASEADO EM FLUXOS DE IMPORTAÇÃO)
 # ==============================================================================
 
-@st.cache_data(show_spinner="Calculando indicadores globais consolidados e bilaterais...")
+@st.cache_data(show_spinner="Calculando indicadores globais consolidados e bilaterais por importação...")
 def compute_comtrade_dual_metrics(comtrade_tidy: pd.DataFrame, years: tuple) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Retorna uma tupla com dois DataFrames:
-    1. df_global: 1 linha por código SH6 (Consolidado Global do País Exportador no Mundo)
-    2. df_bilateral: 1 linha por combinação Reporter (País Comprador) x SH6
+    """Lógica de Importação:
+    - Reporter = País Imprtador (Quem compra).
+    - Partner = País Fornecedor/Exportador (Ex: Brasil).
+    
+    1. df_global: Consolidado das vendas totais do Partner (País Fornecedor) agregando todos os países importadores (1 linha por SH6).
+    2. df_bilateral: Análise por País Imprtador (Reporter) x Fornecedor (Partner) x SH6.
     """
     years = tuple(sorted(set(int(y) for y in years)))
     df_filtered = comtrade_tidy[comtrade_tidy["ano"].isin(years)].copy()
@@ -274,11 +277,10 @@ def compute_comtrade_dual_metrics(comtrade_tidy: pd.DataFrame, years: tuple) -> 
     min_year, max_year = years[0], years[-1]
     num_years = max_year - min_year
 
-    # Detectar o rótulo do Mundo
+    # Detectar rótulo do Mundo entre os importadores
     all_reporters = df_filtered["reporter"].unique()
     world_rep = detect_world_label(all_reporters)
 
-    # Separação do dataset
     if world_rep:
         world_raw = df_filtered[df_filtered["reporter"] == world_rep]
         rep_raw = df_filtered[df_filtered["reporter"] != world_rep]
@@ -286,18 +288,23 @@ def compute_comtrade_dual_metrics(comtrade_tidy: pd.DataFrame, years: tuple) -> 
         world_raw = df_filtered
         rep_raw = df_filtered
 
-    # --- CAMADA 1: CONSOLIDAÇÃO GLOBAL POR SH6 (1 LINHA POR PRODUTO) ---
-    # Consolida vendas de cada país no MUNDO para o produto k
-    rep_sh6_global = rep_raw.groupby(["reporter", "sh6", "sh6_desc"], as_index=False)["valor"].sum()
+    # --- CAMADA 1: CONSOLIDAÇÃO GLOBAL POR FORNECEDOR (PARTNER) E SH6 (1 LINHA POR PRODUTO) ---
+    # Somamos quanto todos os países importadores (Reporters) compraram de cada fornecedor (Partner) para o produto k
+    prt_sh6_global = rep_raw.groupby(["partner", "sh6", "sh6_desc"], as_index=False)["valor"].sum()
     
-    # Demanda Global do produto k
-    world_sh6_global = world_raw.groupby(["sh6"], as_index=False)["valor"].sum().rename(columns={"valor": "mundo_valor"})
+    # Demanda Global do produto k (Soma de todas as importações do mundo)
+    if not world_raw.empty:
+        world_sh6_global = world_raw.groupby(["sh6"], as_index=False)["valor"].sum().rename(columns={"valor": "mundo_valor"})
+    else:
+        world_sh6_global = rep_raw.groupby(["sh6"], as_index=False)["valor"].sum().rename(columns={"valor": "mundo_valor"})
+        
     world_map = world_sh6_global.set_index("sh6")["mundo_valor"]
     X_w_total = float(world_sh6_global["mundo_valor"].sum())
 
-    # Dinamismo da Demanda Mundial (CAGR ou % de variação)
-    w_min = world_raw[world_raw["ano"] == min_year].groupby("sh6")["valor"].sum().rename("mundo_val_init")
-    w_max = world_raw[world_raw["ano"] == max_year].groupby("sh6")["valor"].sum().rename("mundo_val_final")
+    # Dinamismo da Demanda Importadora Mundial (CAGR ou % de variação)
+    ref_world = world_raw if not world_raw.empty else rep_raw
+    w_min = ref_world[ref_world["ano"] == min_year].groupby("sh6")["valor"].sum().rename("mundo_val_init")
+    w_max = ref_world[ref_world["ano"] == max_year].groupby("sh6")["valor"].sum().rename("mundo_val_final")
     w_growth = pd.concat([w_min, w_max], axis=1).fillna(0.0)
 
     if num_years > 0:
@@ -309,28 +316,28 @@ def compute_comtrade_dual_metrics(comtrade_tidy: pd.DataFrame, years: tuple) -> 
     else:
         w_growth["crescimento_mundo_pct"] = 0.0
 
-    pv_rep_g = rep_sh6_global.pivot_table(index="sh6", columns="reporter", values="valor", aggfunc="sum", fill_value=0.0)
-    X_i_total_g = pv_rep_g.sum(axis=0)
+    pv_prt_g = prt_sh6_global.pivot_table(index="sh6", columns="partner", values="valor", aggfunc="sum", fill_value=0.0)
+    X_i_total_g = pv_prt_g.sum(axis=0) # Total vendido por cada fornecedor para o mundo
 
-    share_pais_g = pv_rep_g.div(X_i_total_g.replace(0, np.nan), axis=1).fillna(0.0)
-    share_mundo_g = (world_map / X_w_total) if X_w_total > 0 else pd.Series(0.0, index=pv_rep_g.index)
-    share_mundo_g = share_mundo_g.reindex(pv_rep_g.index).fillna(0.0)
+    share_pais_g = pv_prt_g.div(X_i_total_g.replace(0, np.nan), axis=1).fillna(0.0)
+    share_mundo_g = (world_map / X_w_total) if X_w_total > 0 else pd.Series(0.0, index=pv_prt_g.index)
+    share_mundo_g = share_mundo_g.reindex(pv_prt_g.index).fillna(0.0)
 
     rca_g_df = share_pais_g.div(share_mundo_g.replace(0, np.nan), axis=0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
     rsca_g_df = ((rca_g_df - 1) / (rca_g_df + 1)).fillna(-1.0)
-    ms_g_df = pv_rep_g.div(world_map.replace(0, np.nan), axis=0).fillna(0.0) * 100.0
+    ms_g_df = pv_prt_g.div(world_map.replace(0, np.nan), axis=0).fillna(0.0) * 100.0
 
-    # Unpivot Tidy Global
-    val_g_long = pv_rep_g.stack().rename("valor").reset_index()
+    # Unpivot Tidy Global (1 linha por Partner x SH6)
+    val_g_long = pv_prt_g.stack().rename("valor").reset_index()
     rca_g_long = rca_g_df.stack().rename("rca_global").reset_index()
     rsca_g_long = rsca_g_df.stack().rename("rsca_global").reset_index()
     ms_g_long = ms_g_df.stack().rename("market_share_pct").reset_index()
 
-    df_global = val_g_long.merge(rca_g_long, on=["sh6", "reporter"])\
-                          .merge(rsca_g_long, on=["sh6", "reporter"])\
-                          .merge(ms_g_long, on=["sh6", "reporter"])
+    df_global = val_g_long.merge(rca_g_long, on=["sh6", "partner"])\
+                          .merge(rsca_g_long, on=["sh6", "partner"])\
+                          .merge(ms_g_long, on=["sh6", "partner"])
 
-    sh6_descs = rep_sh6_global.groupby("sh6")["sh6_desc"].first()
+    sh6_descs = prt_sh6_global.groupby("sh6")["sh6_desc"].first()
     df_global["sh6_desc"] = df_global["sh6"].map(sh6_descs)
     df_global["mundo_valor"] = df_global["sh6"].map(world_map).fillna(0.0)
     df_global["crescimento_mundo_pct"] = df_global["sh6"].map(w_growth["crescimento_mundo_pct"]).fillna(0.0)
@@ -349,29 +356,30 @@ def compute_comtrade_dual_metrics(comtrade_tidy: pd.DataFrame, years: tuple) -> 
 
     df_global["posicao_estrategica"] = df_global.apply(classify, axis=1)
 
-    # --- CAMADA 2: ANÁLISE BILATERAL POR PAÍS COMPRADOR (REPORTER x SH6) ---
+    # --- CAMADA 2: ANÁLISE BILATERAL POR PAÍS COMPRADOR (REPORTER) x FORNECEDOR (PARTNER) x SH6 ---
     rep_sh6_prt = rep_raw.groupby(["reporter", "partner", "sh6", "sh6_desc"], as_index=False)["valor"].sum()
     
-    # Calcular o RCA Bilateral em relação ao fluxo do país parceiro
-    pv_prt = rep_sh6_prt.pivot_table(index=["sh6", "partner"], columns="reporter", values="valor", aggfunc="sum", fill_value=0.0)
-    tot_prt_rep = pv_prt.sum(axis=0)
+    # Quanto o País Imprtador (Reporter) comprou do Fornecedor (Partner) no produto SH6
+    pv_rep_b = rep_sh6_prt.pivot_table(index=["sh6", "reporter"], columns="partner", values="valor", aggfunc="sum", fill_value=0.0)
+    tot_imp_prt = pv_rep_b.sum(axis=0) # Importação total de cada fornecedor do ponto de vista das declarações
 
-    share_prt_pais = pv_prt.div(tot_prt_rep.replace(0, np.nan), axis=1).fillna(0.0)
+    # Share da pauta do fornecedor no país comprador específico
+    share_imp_pais = pv_rep_b.div(tot_imp_prt.replace(0, np.nan), axis=1).fillna(0.0)
     
-    # Total de compras do país parceiro (Reporter)
-    tot_prt_world = rep_sh6_prt.groupby("partner")["valor"].sum()
-    val_prt_sh6 = rep_sh6_prt.groupby(["sh6", "partner"])["valor"].sum()
-    share_prt_world = val_prt_sh6.div(val_prt_sh6.index.get_level_values("partner").map(tot_prt_world), axis=0).fillna(0.0)
+    # Importação total do país comprador para aquele produto k
+    tot_imp_reporter = rep_sh6_prt.groupby("reporter")["valor"].sum()
+    val_rep_sh6 = rep_sh6_prt.groupby(["sh6", "reporter"])["valor"].sum()
+    share_imp_world = val_rep_sh6.div(val_rep_sh6.index.get_level_values("reporter").map(tot_imp_reporter), axis=0).fillna(0.0)
 
-    rca_bila_df = share_prt_pais.div(share_prt_world.replace(0, np.nan), axis=0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    rca_bila_df = share_imp_pais.div(share_imp_world.replace(0, np.nan), axis=0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
     rsca_bila_df = ((rca_bila_df - 1) / (rca_bila_df + 1)).fillna(-1.0)
 
-    val_b_long = pv_prt.stack().rename("valor").reset_index()
+    val_b_long = pv_rep_b.stack().rename("valor").reset_index()
     rca_b_long = rca_bila_df.stack().rename("rca_bilateral").reset_index()
     rsca_b_long = rsca_bila_df.stack().rename("rsca_bilateral").reset_index()
 
-    df_bilateral = val_b_long.merge(rca_b_long, on=["sh6", "partner", "reporter"])\
-                             .merge(rsca_b_long, on=["sh6", "partner", "reporter"])
+    df_bilateral = val_b_long.merge(rca_b_long, on=["sh6", "reporter", "partner"])\
+                             .merge(rsca_b_long, on=["sh6", "reporter", "partner"])
     df_bilateral["sh6_desc"] = df_bilateral["sh6"].map(sh6_descs)
 
     return df_global, df_bilateral
@@ -389,15 +397,15 @@ def compute_state_diversification_potentials(
     if base_uf.empty or not required_cols.issubset(base_uf.columns) or df_global.empty:
         return pd.DataFrame()
 
-    brazil_rep_name = next(
-        (r for r in df_global["reporter"].dropna().unique()
-         if normalize_text(r) in ("brazil", "brasil", "bra")),
+    brazil_prt_name = next(
+        (p for p in df_global["partner"].dropna().unique()
+         if normalize_text(p) in ("brazil", "brasil", "bra")),
         None,
     )
-    if brazil_rep_name is None:
+    if brazil_prt_name is None:
         return pd.DataFrame()
 
-    br_metrics = df_global[df_global["reporter"] == brazil_rep_name].copy()
+    br_metrics = df_global[df_global["partner"] == brazil_prt_name].copy()
     if br_metrics.empty:
         return pd.DataFrame()
 
@@ -589,7 +597,7 @@ PAGE = st.sidebar.radio(
 st.sidebar.divider()
 st.sidebar.header("📁 Carga de Dados")
 
-file_comtrade = st.sidebar.file_uploader("1. UN Comtrade (CSV, XLSX, Parquet, JSON)", type=["csv", "xlsx", "xls", "parquet", "json"])
+file_comtrade = st.sidebar.file_uploader("1. UN Comtrade — Importações (CSV, XLSX, Parquet, JSON)", type=["csv", "xlsx", "xls", "parquet", "json"])
 file_comexstat = st.sidebar.file_uploader("2. ComexStat Brasil (Nacional)", type=["csv", "xlsx", "xls", "parquet"])
 file_comexstat_uf = st.sidebar.file_uploader("3. ComexStat por Estado (UF)", type=["csv", "xlsx", "xls", "parquet"])
 
@@ -631,21 +639,21 @@ if "raw_comtrade" in st.session_state:
     col_desc = find_column(df_ct, ["cmddesc"]) or COMTRADE_FIXED_COLS["sh6_desc"]
 
     with st.sidebar.expander("⚙️ Configurações UN Comtrade", expanded=True):
-        st.caption("📌 **Campos fixos:** refYear, ReporterDesc, PartnerDesc, cmdCode, cmdDesc")
+        st.caption("📌 **Lógica de Importação:** Reporter = Imprtador | Partner = Fornecedor/Exportador")
 
-        value_candidates = [c for c in cols if any(v in normalize_text(c) for v in ["value", "val", "fob", "cif", "primaryvalue"])]
+        value_candidates = [c for c in cols if any(v in normalize_text(c) for v in ["value", "val", "cif", "fob", "primaryvalue"])]
         default_val_idx = cols.index(value_candidates[0]) if value_candidates else 0
-        c_val = st.selectbox("Selecione o Campo de Valor:", cols, index=default_val_idx)
+        c_val = st.selectbox("Selecione o Campo de Valor Importado:", cols, index=default_val_idx)
 
         if col_prt in df_ct.columns:
             partners_list = sorted(df_ct[col_prt].dropna().astype(str).unique().tolist())
-            sel_partners = st.multiselect("Filtrar Parceiros Comerciais (vazio = todos):", partners_list, default=[])
+            sel_partners = st.multiselect("Filtrar Países Fornecedores/Partners (vazio = todos):", partners_list, default=[])
         else:
             sel_partners = []
 
         if col_rep in df_ct.columns:
             reporters_list = sorted(df_ct[col_rep].dropna().astype(str).unique().tolist())
-            sel_reporters = st.multiselect("Filtrar Países Reporters (vazio = todos):", reporters_list, default=[])
+            sel_reporters = st.multiselect("Filtrar Países Imprtadores/Reporters (vazio = todos):", reporters_list, default=[])
         else:
             sel_reporters = []
 
@@ -676,10 +684,10 @@ if "raw_comtrade" in st.session_state:
 # 7. MÓDULOS DA APLICAÇÃO
 # ==============================================================================
 
-# --- PÁGINA 1: UN COMTRADE - ESTRUTURA DUAL (GLOBAL SH6 x BILATERAL) ---
+# --- PÁGINA 1: UN COMTRADE - ESTRUTURA DUAL (GLOBAL SH6 x BILATERAL POR IMPORTAÇÃO) ---
 def page_comtrade_global():
-    st.title("📊 Indicadores Oficiais de Competitividade Internacional")
-    st.caption("Visão Dupla: RCA Consolidado Global por SH6 e RCA Bilateral Específico por País Comprador.")
+    st.title("📊 Indicadores Oficiais de Competitividade (Matriz de Importação)")
+    st.caption("Lógica de Importação Mundial: Analisa quanto cada país comprador (Reporter) importa do fornecedor (Partner, ex: Brasil).")
 
     if "comtrade_tidy" not in st.session_state:
         st.info("👈 Por favor, carregue e processe o arquivo do UN Comtrade na barra lateral.")
@@ -704,20 +712,31 @@ def page_comtrade_global():
         st.warning("Não há dados suficientes para o intervalo de anos selecionado.")
         return
 
-    # --- CÁLCULO DAS MÉTRICAS EXECUTIVAS DE FÁCIL EXTRAÇÃO ---
-    total_sh6_pauta = df_global["sh6"].nunique()
-    sh6_com_vantagem = df_global[df_global["rca_global"] >= 1.0]["sh6"].nunique()
+    # Seleção do País Fornecedor Alvo (Partner, ex: Brasil)
+    partners_disponiveis = sorted(df_global["partner"].unique())
+    default_prt_idx = 0
+    for idx, p in enumerate(partners_disponiveis):
+        if normalize_text(p) in ("brazil", "brasil", "bra"):
+            default_prt_idx = idx
+            break
+
+    target_partner = st.selectbox("Selecione o País Fornecedor Analisado (Partner):", partners_disponiveis, index=default_prt_idx)
+
+    df_g_prt = df_global[df_global["partner"] == target_partner].copy()
+    df_b_prt = df_bilateral[df_bilateral["partner"] == target_partner].copy() if not df_bilateral.empty else pd.DataFrame()
+
+    # --- CÁLCULO DAS MÉTRICAS EXECUTIVAS DA BASE DE IMPORTAÇÃO ---
+    total_sh6_pauta = df_g_prt["sh6"].nunique()
+    sh6_com_vantagem = df_g_prt[df_g_prt["rca_global"] >= 1.0]["sh6"].nunique()
     
-    # Cobertura geográfica do país
-    if not df_bilateral.empty:
-        total_paises_destino = df_bilateral["partner"].nunique()
-        paises_com_vantagem = df_bilateral[df_bilateral["rca_bilateral"] >= 1.0]["partner"].nunique()
+    if not df_b_prt.empty:
+        total_paises_compradores = df_b_prt["reporter"].nunique()
+        paises_com_vantagem = df_b_prt[df_b_prt["rca_bilateral"] >= 1.0]["reporter"].nunique()
     else:
-        total_paises_destino = 0
+        total_paises_compradores = 0
         paises_com_vantagem = 0
 
-    media_rca_g = df_global["rca_global"].mean()
-    media_rsca_g = df_global["rsca_global"].mean()
+    media_rsca_g = df_g_prt["rsca_global"].mean() if not df_g_prt.empty else 0.0
 
     # --- CARTÕES DE KPI EXECUTIVOS ---
     html_kpis = f"""
@@ -728,15 +747,15 @@ def page_comtrade_global():
         </div>
         <div class="metric-card" style="background: rgba(239, 246, 255, 0.85); border-color: rgba(59, 130, 246, 0.35);">
             <div class="m-value" style="color: #2563eb;">{total_sh6_pauta:,}</div>
-            <div class="m-label">Total de Produtos na Pauta (SH6)</div>
+            <div class="m-label">Total Produtos Comercializados (SH6)</div>
         </div>
         <div class="metric-card" style="background: rgba(245, 243, 255, 0.85); border-color: rgba(139, 92, 246, 0.35);">
             <div class="m-value" style="color: #7c3aed;">{paises_com_vantagem:,}</div>
-            <div class="m-label">Países Destino com RCA ≥ 1.0</div>
+            <div class="m-label">Países Compradores com RCA ≥ 1.0</div>
         </div>
         <div class="metric-card" style="background: rgba(254, 243, 199, 0.85); border-color: rgba(245, 158, 11, 0.35);">
-            <div class="m-value" style="color: #d97706;">{total_paises_destino:,}</div>
-            <div class="m-label">Total de Países de Destino</div>
+            <div class="m-value" style="color: #d97706;">{total_paises_compradores:,}</div>
+            <div class="m-label">Total de Países Compradores</div>
         </div>
         <div class="metric-card" style="background: rgba(243, 244, 246, 0.85); border-color: rgba(156, 163, 175, 0.35);">
             <div class="m-value" style="color: #4b5563;">{format_num(media_rsca_g, 2)}</div>
@@ -750,34 +769,34 @@ def page_comtrade_global():
 
     # --- ABAS DE NÍVEL DE AGREGAÇÃO ---
     tab_g, tab_b = st.tabs([
-        "🌐 Visão Consolidada Global (1 Linha por SH6)",
-        "🤝 Visão Bilateral Específica (Por País Comprador)"
+        "🌐 Visão Consolidada Global por SH6 (Atendimento da Demanda Mundial)",
+        "🤝 Visão Bilateral por País Comprador (Reporter x SH6)"
     ])
 
     with tab_g:
-        st.subheader("📌 Tabela Consolidada Global (Nível SH6)")
-        st.caption(f"Exatamente {total_sh6_pauta:,} produtos avaliados consolidados para o país no mercado global.")
+        st.subheader(f"📌 Tabela Consolidada Global — {target_partner} no Mundo")
+        st.caption(f"1 linha por código SH6. Exatamente {total_sh6_pauta:,} produtos comercializados consolidados.")
 
         st.dataframe(
-            df_global,
+            df_g_prt,
             column_config={
                 "sh6": "Código SH6",
                 "sh6_desc": "Descrição do Produto",
-                "reporter": "País Exportador",
-                "valor": st.column_config.NumberColumn("Valor Exportado (US$)", format="$ %,.2f"),
-                "mundo_valor": st.column_config.NumberColumn("Demanda Global (US$)", format="$ %,.2f"),
+                "partner": "País Fornecedor (Partner)",
+                "valor": st.column_config.NumberColumn("Total Comprado do País (US$)", format="$ %,.2f"),
+                "mundo_valor": st.column_config.NumberColumn("Importação Mundial Total (US$)", format="$ %,.2f"),
                 "rca_global": st.column_config.NumberColumn("RCA Global (Balassa)", format="%.4f"),
                 "rsca_global": st.column_config.NumberColumn("RSCA Global (Simétrico)", format="%.4f"),
                 "market_share_pct": st.column_config.NumberColumn("Market Share Global (%)", format="%.2f%%"),
-                "crescimento_mundo_pct": st.column_config.NumberColumn("Dinamismo Mundial (%)", format="%.2f%%"),
+                "crescimento_mundo_pct": st.column_config.NumberColumn("Dinamismo Importador (%)", format="%.2f%%"),
                 "posicao_estrategica": "Matriz CEPAL/MAGIC",
             },
             height=380,
         )
 
-        st.markdown("#### **Matriz Trimétrica Consolidada: RSCA Global vs Dinamismo Mundial**")
+        st.markdown("#### **Matriz Trimétrica Consolidada: RSCA vs Dinamismo Importador Mundial**")
         fig_matrix = px.scatter(
-            df_global,
+            df_g_prt,
             x="rsca_global",
             y="crescimento_mundo_pct",
             color="posicao_estrategica",
@@ -792,21 +811,21 @@ def page_comtrade_global():
         st.plotly_chart(fig_matrix, width="stretch")
 
     with tab_b:
-        st.subheader("📌 Tabela Bilateral por País Comprador (Partner x SH6)")
-        st.caption("Detalhamento específico do desempenho competitivo por mercado comprador de destino.")
+        st.subheader(f"📌 Tabela Bilateral por País Comprador — Compras de {target_partner}")
+        st.caption("Análise desagregada de quais países compram determinado produto e o valor comprado.")
 
-        if not df_bilateral.empty:
-            prts_filter = st.multiselect("Filtrar por País Comprador (Partner):", sorted(df_bilateral["partner"].unique()))
-            df_b_filtered = df_bilateral[df_bilateral["partner"].isin(prts_filter)] if prts_filter else df_bilateral
+        if not df_b_prt.empty:
+            reps_filter = st.multiselect("Filtrar por País Comprador (Reporter):", sorted(df_b_prt["reporter"].unique()))
+            df_b_filtered = df_b_prt[df_b_prt["reporter"].isin(reps_filter)] if reps_filter else df_b_prt
 
             st.dataframe(
                 df_b_filtered,
                 column_config={
                     "sh6": "Código SH6",
                     "sh6_desc": "Descrição do Produto",
-                    "partner": "País Comprador",
-                    "reporter": "País Exportador",
-                    "valor": st.column_config.NumberColumn("Valor Exportado ao País (US$)", format="$ %,.2f"),
+                    "reporter": "País Comprador (Reporter)",
+                    "partner": "País Fornecedor (Partner)",
+                    "valor": st.column_config.NumberColumn("Valor Comprado do Fornecedor (US$)", format="$ %,.2f"),
                     "rca_bilateral": st.column_config.NumberColumn("RCA Bilateral", format="%.4f"),
                     "rsca_bilateral": st.column_config.NumberColumn("RSCA Bilateral", format="%.4f"),
                 },
@@ -840,15 +859,15 @@ def page_comexstat_cross():
         st.warning("Não há dados do Comtrade para o ano selecionado.")
         return
 
-    brazil_rep = next(
-        (r for r in df_global["reporter"].unique() if normalize_text(r) in ("brazil", "brasil", "bra")),
+    brazil_prt = next(
+        (p for p in df_global["partner"].unique() if normalize_text(p) in ("brazil", "brasil", "bra")),
         None,
     )
-    if brazil_rep is None:
-        st.error("Não foi encontrado um reporter 'Brazil'/'Brasil' nos dados do Comtrade processados.")
+    if brazil_prt is None:
+        st.error("Não foi encontrado o fornecedor 'Brazil'/'Brasil' nos dados do Comtrade processados.")
         return
 
-    br_ct = df_global[df_global["reporter"] == brazil_rep][[
+    br_ct = df_global[df_global["partner"] == brazil_prt][[
         "sh6", "rca_global", "rsca_global", "market_share_pct", "crescimento_mundo_pct", "posicao_estrategica", "mundo_valor"
     ]].copy()
 
