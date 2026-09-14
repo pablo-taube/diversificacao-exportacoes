@@ -2,7 +2,7 @@
 """
 ==============================================================================
  SISTEMA DE ANÁLISE DE DIVERSIFICAÇÃO DAS EXPORTAÇÕES BRASILEIRAS
- (Cupertino Executive Edition) — Fixed Upload UI & Scatter Plots
+ (Cupertino Executive Edition) — Fixed Upload Layout & Metrics
 ==============================================================================
 """
 from __future__ import annotations
@@ -438,6 +438,14 @@ def inject_custom_css():
             margin: 1.2rem 0 0.5rem;
         }
 
+        .sidebar-file-label {
+            font-size: 0.78rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-top: 0.8rem;
+            margin-bottom: 0.2rem;
+        }
+
         /* KPI Cards */
         .metric-card {
             background: var(--card);
@@ -542,21 +550,27 @@ with st.sidebar:
     st.divider()
     st.markdown('<div class="sidebar-section-title">Bases de Dados</div>', unsafe_allow_html=True)
 
+    st.markdown('<div class="sidebar-file-label">01 · UN Comtrade</div>', unsafe_allow_html=True)
     file_comtrade = st.file_uploader(
         "01 · UN Comtrade",
         type=["csv", "xlsx", "xls", "parquet", "json"],
+        label_visibility="collapsed",
         help="CSV, XLSX, Parquet ou JSON do UN Comtrade.",
     )
 
+    st.markdown('<div class="sidebar-file-label">02 · ComexStat Nacional</div>', unsafe_allow_html=True)
     file_comexstat = st.file_uploader(
         "02 · ComexStat Nacional",
         type=["csv", "xlsx", "xls", "parquet"],
+        label_visibility="collapsed",
         help="Base nacional ComexStat por código SH6.",
     )
 
+    st.markdown('<div class="sidebar-file-label">03 · ComexStat por Estado (UF)</div>', unsafe_allow_html=True)
     file_comexstat_uf = st.file_uploader(
         "03 · ComexStat por Estado (UF)",
         type=["csv", "xlsx", "xls", "parquet"],
+        label_visibility="collapsed",
         help="Base ComexStat dividida por UF e SH6.",
     )
 
@@ -756,7 +770,7 @@ def page_comtrade_global():
         st.plotly_chart(fig_rsca, use_container_width=True)
 
 
-# --- MÓDULO 2: CRUZAMENTO COMEXSTAT X COMTRADE (SCATTER PLOTS) ---
+# --- MÓDULO 2: CRUZAMENTO COMEXSTAT X COMTRADE (NOVOS CARTÕES + SCATTER) ---
 def page_comexstat_cross():
     st.title("🇧🇷 Cruzamento Pauta Brasil x Competitividade Global")
     st.caption("Pauta nacional ComexStat alinhada às vantagens globais calculadas via Comtrade")
@@ -812,7 +826,12 @@ def page_comexstat_cross():
     if f_cgce1 and "cgce1_desc" in df_f.columns: df_f = df_f[df_f["cgce1_desc"].isin(f_cgce1)]
     if f_cgce2 and "cgce2_desc" in df_f.columns: df_f = df_f[df_f["cgce2_desc"].isin(f_cgce2)]
 
-    m1, m2, m3, m4 = st.columns(4)
+    # CÁLCULOS DAS NOVAS MÉTRICAS SOLICITADAS
+    sh6_rca_rsca_alto = df_f[(df_f["rca"] > 1.0) & (df_f["rsca"] > 0.0)]["sh6_cod"].nunique()
+    sh6_rca_rsca_baixo = df_f[(df_f["rca"] < 1.0) & (df_f["rsca"] < 0.0)]["sh6_cod"].nunique()
+
+    # Painel de 5 Cartões Executivos
+    m1, m2, m3, m4, m5 = st.columns(5)
     with m1:
         st.markdown(
             f"""<div class="metric-card">
@@ -826,7 +845,7 @@ def page_comexstat_cross():
     with m2:
         st.markdown(
             f"""<div class="metric-card">
-                <div class="label">Produtos Distintos</div>
+                <div class="label">Produtos Monitorados</div>
                 <div class="value-container">
                     <div class="value">{df_f['sh6_cod'].nunique():,}</div>
                     <span class="badge badge-amber">SH6</span>
@@ -837,7 +856,7 @@ def page_comexstat_cross():
         produtos_adv = df_f[df_f["rca"] >= 1.0]["sh6_cod"].nunique()
         st.markdown(
             f"""<div class="metric-card">
-                <div class="label">Com Vantagem</div>
+                <div class="label">Produtos Competitivos</div>
                 <div class="value-container">
                     <div class="value">{produtos_adv:,}</div>
                     <span class="badge badge-green">RCA ≥ 1.0</span>
@@ -845,13 +864,22 @@ def page_comexstat_cross():
             </div>""", unsafe_allow_html=True
         )
     with m4:
-        produtos_dis = df_f[df_f["rca"] < 1.0]["sh6_cod"].nunique()
         st.markdown(
             f"""<div class="metric-card">
-                <div class="label">Sem Vantagem</div>
+                <div class="label">SH6 Vantagem Comparativa</div>
                 <div class="value-container">
-                    <div class="value">{produtos_dis:,}</div>
-                    <span class="badge badge-red">RCA &lt; 1.0</span>
+                    <div class="value">{sh6_rca_rsca_alto:,}</div>
+                    <span class="badge badge-green">RCA &gt; 1 · RSCA &gt; 0</span>
+                </div>
+            </div>""", unsafe_allow_html=True
+        )
+    with m5:
+        st.markdown(
+            f"""<div class="metric-card">
+                <div class="label">SH6 Desvantagem Comparativa</div>
+                <div class="value-container">
+                    <div class="value">{sh6_rca_rsca_baixo:,}</div>
+                    <span class="badge badge-red">RCA &lt; 1 · RSCA &lt; 0</span>
                 </div>
             </div>""", unsafe_allow_html=True
         )
@@ -875,7 +903,6 @@ def page_comexstat_cross():
 
         c_sec1, c_sec2 = st.columns(2)
         with c_sec1:
-            # AJUSTADO PARA SCATTER PLOT
             fig = px.scatter(
                 agg_sector, 
                 x="Valor_FOB", 
@@ -953,7 +980,6 @@ def page_state_diversification():
 
     st.markdown("---")
 
-    # Ranking de Estados — AJUSTADO PARA SCATTER PLOT
     st.subheader("🏆 Matriz de Potencial por UF")
     rank_uf = df_potencial.groupby("uf").agg(
         Score_Potencial_Total=("potencial_score", "sum"),
@@ -981,7 +1007,6 @@ def page_state_diversification():
     fig_rank.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
     st.plotly_chart(fig_rank, use_container_width=True)
 
-    # Detalhamento Específico por UF
     st.subheader("🔍 Oportunidades por Estado (UF)")
     uf_target = st.selectbox("Selecione o Estado:", sorted(df_potencial["uf"].unique()))
     df_uf_filtered = df_potencial[df_potencial["uf"] == uf_target]
@@ -989,7 +1014,6 @@ def page_state_diversification():
     only_new = st.checkbox("Mostrar apenas produtos NÃO exportados pela UF", value=True)
     df_uf_seg = df_uf_filtered[~df_uf_filtered["ja_exportado"]] if only_new else df_uf_filtered
 
-    # AJUSTADO PARA SCATTER PLOT TOP OPORTUNIDADES
     top_n = df_uf_seg.sort_values("potencial_score", ascending=False).head(20)
     if not top_n.empty:
         label_col = "sh6_desc" if "sh6_desc" in top_n.columns and top_n["sh6_desc"].notna().any() else "sh6_cod"
