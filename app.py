@@ -1,7 +1,47 @@
 # -*- coding: utf-8 -*-
 """
 ==============================================================================
- SISTEMA DE ANÁLISE DE DIVERSIFICAÇÃO DAS EXPORTAÇÕES BRASILEIRAS (GLASSMORMISMO CUPERTINO)
+ SISTEMA DE ANÁLISE DE DIVERSIFICAÇÃO DAS EXPORTAÇÕES BRASILEIRAS
+ (Glassmorfismo Cupertino) — v2
+
+ Este arquivo é uma refatoração do sistema original, com três correções /
+ melhorias estruturais principais:
+
+ 1) MOTOR DE RCA/RSCA (UN Comtrade)
+    - O cálculo agora é totalmente vetorizado (sem loop linha-a-linha),
+      suporta múltiplos anos de uma vez (série temporal) e, quando a base
+      contém uma linha "World"/"Mundo" como REPORTER (padrão comum em
+      extrações do Comtrade), essa linha passa a ser usada como o
+      verdadeiro denominador mundial (Xwj, Xw) da fórmula de Balassa —
+      em vez de aproximar o mundo somando apenas os reporters selecionados
+      pelo usuário. Isso deixa o RCA correto mesmo quando o usuário filtra
+      poucos países como "reporter" para comparação.
+    - Reporters: todos os países da base, ou um subconjunto selecionado
+      pelo usuário.
+    - Partners: qualquer país listado + a linha "World" (usada para
+      calcular o comércio total de cada reporter com o mundo).
+
+ 2) CRUZAMENTO NACIONAL (ComexStat Brasil x Comtrade)
+    - Mantido o cruzamento por SH6 e os filtros por SH6, CUCI Grupo,
+      ISIC Divisão, ISIC Seção, CGCE Nível 1 e CGCE Nível 2.
+
+ 3) POTENCIAL DE DIVERSIFICAÇÃO POR ESTADO (UF)
+    - Correção estrutural: a versão original só considerava um produto
+      como "oportunidade" para um estado se aquele estado já tivesse
+      ALGUM registro de exportação daquele SH6 (ou se NENHUM estado
+      exportasse o produto). Isso fazia com que produtos com vantagem
+      nacional (RCA >= 1) que um estado nunca exportou, mas que outros
+      estados já exportam, não aparecessem como oportunidade para o
+      primeiro estado.
+    - Agora o motor faz um PRODUTO CARTESIANO (cross-join) entre todos os
+      estados presentes na base e todos os produtos SH6 com vantagem
+      comparativa nacional (RCA >= 1), e só então cruza com o valor
+      efetivamente exportado por cada estado (0 quando o estado nunca
+      exportou aquele SH6). Isso garante que toda combinação
+      Estado x Produto-com-vantagem-nacional seja avaliada.
+    - Segmentação por CUCI Grupo e por SH6 foi adicionada na tela de
+      detalhamento por estado, com um gráfico de "top produtos" por
+      potencial dentro do estado selecionado.
 ==============================================================================
 """
 from __future__ import annotations
@@ -14,7 +54,6 @@ import unicodedata
 import numpy as np
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
 
 # ==============================================================================
@@ -31,6 +70,7 @@ st.set_page_config(
 # ==============================================================================
 
 def normalize_text(s) -> str:
+    """Normaliza texto: remove acentos, minúsculas, troca não-alfanuméricos por '_'."""
     if s is None:
         return ""
     s = str(s)
@@ -39,6 +79,20 @@ def normalize_text(s) -> str:
     s = re.sub(r"[^a-z0-9]+", "_", s)
     s = re.sub(r"_+", "_", s).strip("_")
     return s
+
+
+def is_world_label(value) -> bool:
+    """Detecta se um rótulo de país representa o agregado 'Mundo'/'World'."""
+    nv = normalize_text(value)
+    return nv in ("world", "mundo") or nv.startswith("world") or nv.startswith("mundo")
+
+
+def detect_world_label(values) -> str | None:
+    """Retorna o primeiro valor de uma lista que representa 'World'/'Mundo', se existir."""
+    for v in values:
+        if is_world_label(v):
+            return v
+    return None
 
 
 @st.cache_data(show_spinner=False)
@@ -146,6 +200,13 @@ _COMEXSTAT_FIELD_ORDER = [
     "valor_fob", "uf",
 ]
 
+# Colunas descritivas / de segmentação usadas nos filtros e na enriquecimento
+# dos dados de UF (nem todo arquivo por estado necessariamente as inclui).
+COMEXSTAT_DESC_COLUMNS = [
+    "sh6_desc", "cuci_cod", "cuci_desc",
+    "isic_div_desc", "isic_sec_desc", "cgce1_desc", "cgce2_desc",
+]
+
 
 def standardize_comexstat(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -180,6 +241,7 @@ def standardize_comexstat(df: pd.DataFrame) -> pd.DataFrame:
             df["valor_fob"] = pd.to_numeric(cleaned, errors="coerce")
         else:
             df["valor_fob"] = pd.to_numeric(df["valor_fob"], errors="coerce")
+        df["valor_fob"] = df["valor_fob"].fillna(0.0)
 
     if "sh6_cod" in df.columns:
         extracted = df["sh6_cod"].astype(str).str.extract(r"(\d+)")[0]
@@ -192,7 +254,7 @@ def standardize_comexstat(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ==============================================================================
-# 3. PADRONIZAÇÃO COMTRADE (CÁLCULO RCA E RSCA MULTI-PAÍS)
+# 3. PADRONIZAÇÃO COMTRADE
 # ==============================================================================
 
 def guess_comtrade_columns(df: pd.DataFrame) -> dict:
@@ -215,8 +277,19 @@ def standardize_comtrade(
     sh6desc_col: str | None,
     value_col: str,
     world_partner_values: list,
-    selected_reporters: list = None,
+    selected_reporters: list | None = None,
 ) -> pd.DataFrame:
+    """
+    Padroniza a base do UN Comtrade para o formato 'tidy':
+    ano | reporter | sh6 | sh6_desc | valor (exportações do reporter para o
+    conjunto de parceiros marcados como 'World').
+
+    IMPORTANTE: mesmo quando `selected_reporters` é informado, qualquer linha
+    cujo reporter seja 'World'/'Mundo' é sempre preservada. Ela é usada depois,
+    em `compute_comtrade_metrics`, como o verdadeiro denominador mundial da
+    fórmula de Balassa (RCA), em vez de aproximá-lo somando apenas os
+    reporters selecionados.
+    """
     d = df.copy()
     cols = {
         year_col: "ano",
@@ -238,118 +311,189 @@ def standardize_comtrade(
         d["sh6_desc"] = d["sh6"]
 
     world_str_list = [str(v).lower() for v in world_partner_values]
-    d["is_world"] = d["partner"].astype(str).str.lower().isin(world_str_list)
-    d = d[d["is_world"]].copy()
+    d["is_world_partner"] = d["partner"].astype(str).str.lower().isin(world_str_list)
+    d = d[d["is_world_partner"]].copy()
+    d = d.drop(columns=["is_world_partner"])
 
     if selected_reporters:
         rep_str_list = [str(r).lower() for r in selected_reporters]
-        d = d[d["reporter"].astype(str).str.lower().isin(rep_str_list)]
+        world_reporters_in_data = [r for r in d["reporter"].dropna().unique() if is_world_label(r)]
+        keep_list = set(rep_str_list) | {str(r).lower() for r in world_reporters_in_data}
+        d = d[d["reporter"].astype(str).str.lower().isin(keep_list)]
 
     agg = d.groupby(["ano", "reporter", "sh6", "sh6_desc"], as_index=False)["valor"].sum()
     return agg
 
 
 # ==============================================================================
-# 4. MOTOR DE CÁLCULO DE METRICAS (RCA, RSCA, CAGR, DIVERSIFICAÇÃO)
+# 4. MOTOR DE CÁLCULO DE MÉTRICAS (RCA, RSCA, DIVERSIFICAÇÃO)
 # ==============================================================================
 
-@st.cache_data(show_spinner=False)
-def compute_comtrade_metrics(comtrade_tidy: pd.DataFrame, start_year: int, end_year: int) -> pd.DataFrame:
-    years_needed = [start_year] if start_year == end_year else [start_year, end_year]
-    df_filtered = comtrade_tidy[comtrade_tidy["ano"].isin(years_needed)].copy()
-    
-    rows = []
-    for yr in years_needed:
+@st.cache_data(show_spinner="Calculando RCA/RSCA...")
+def compute_comtrade_metrics(comtrade_tidy: pd.DataFrame, years: tuple) -> pd.DataFrame:
+    """
+    Calcula RCA (Balassa) e RSCA (Laursen) para cada combinação
+    ano x reporter x produto (SH6), de forma vetorizada.
+
+        RCA_ij  = (Xij / Xi.) / (Xwj / Xw.)
+        RSCA_ij = (RCA_ij - 1) / (RCA_ij + 1)
+
+    onde:
+        Xij = exportações do reporter i do produto j para o mundo
+        Xi. = exportações totais do reporter i (todos os produtos) para o mundo
+        Xwj = exportações mundiais do produto j
+        Xw. = exportações mundiais totais (todos os produtos)
+
+    Se a base contiver uma linha de reporter 'World'/'Mundo', ela é usada
+    diretamente como Xwj/Xw. (denominador correto). Caso contrário, Xwj/Xw.
+    são aproximados somando todos os reporters presentes na base filtrada —
+    o que só é uma boa aproximação de "mundo" se a base cobrir a maioria dos
+    países do comércio internacional daquele produto.
+    """
+    years = tuple(sorted(set(int(y) for y in years)))
+    df_filtered = comtrade_tidy[comtrade_tidy["ano"].isin(years)].copy()
+    if df_filtered.empty:
+        return pd.DataFrame(columns=["ano", "reporter", "sh6", "sh6_desc", "valor", "mundo_valor", "rca", "rsca", "usa_world_ref"])
+
+    year_frames = []
+
+    for yr in years:
         df_yr = df_filtered[df_filtered["ano"] == yr]
         if df_yr.empty:
             continue
-        
-        pv = df_yr.pivot_table(index="sh6", columns="reporter", values="valor", aggfunc="sum", fill_value=0)
-        X_ij = pv
-        X_i = pv.sum(axis=0)
-        X_wj = pv.sum(axis=1)
-        X_w = pv.values.sum()
 
-        share_pais = X_ij.div(X_i, axis=1)
-        share_mundo = X_wj / X_w if X_w > 0 else 0
-        
-        rca_mat = share_pais.div(share_mundo, axis=0).replace([np.inf, -np.inf], np.nan).fillna(0)
-        rsca_mat = (rca_mat - 1) / (rca_mat + 1)
-        rsca_mat = rsca_mat.fillna(-1)
-
+        pv = df_yr.pivot_table(index="sh6", columns="reporter", values="valor", aggfunc="sum", fill_value=0.0)
         sh6_descs = df_yr.groupby("sh6")["sh6_desc"].first()
 
-        for sh6_code in pv.index:
-            desc = sh6_descs.get(sh6_code, sh6_code)
-            world_val = X_wj.get(sh6_code, 0.0)
-            for rep in pv.columns:
-                val = pv.loc[sh6_code, rep]
-                rca = rca_mat.loc[sh6_code, rep]
-                rsca = rsca_mat.loc[sh6_code, rep]
-                rows.append({
-                    "ano": yr,
-                    "reporter": rep,
-                    "sh6": sh6_code,
-                    "sh6_desc": desc,
-                    "valor": val,
-                    "mundo_valor": world_val,
-                    "rca": rca,
-                    "rsca": rsca,
-                })
+        world_reporter = detect_world_label(pv.columns.tolist())
+        uses_world_ref = world_reporter is not None and world_reporter in pv.columns
 
-    df_metrics = pd.DataFrame(rows)
-    return df_metrics
+        if uses_world_ref:
+            X_wj = pv[world_reporter]
+            X_w = float(X_wj.sum())
+            reporters = [r for r in pv.columns if r != world_reporter]
+        else:
+            X_wj = pv.sum(axis=1)
+            X_w = float(pv.values.sum())
+            reporters = list(pv.columns)
+
+        if not reporters:
+            continue
+
+        pv_r = pv[reporters]
+        X_i = pv_r.sum(axis=0)  # total exportado por cada reporter (todos os produtos)
+
+        share_pais = pv_r.div(X_i.replace(0, np.nan), axis=1).fillna(0.0)
+        share_mundo = (X_wj / X_w) if X_w > 0 else pd.Series(0.0, index=X_wj.index)
+
+        rca_df = share_pais.div(share_mundo.replace(0, np.nan), axis=0)
+        rca_df = rca_df.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        rsca_df = ((rca_df - 1) / (rca_df + 1)).fillna(-1.0)
+
+        val_long = pv_r.stack().rename("valor").reset_index()
+        val_long.columns = ["sh6", "reporter", "valor"]
+        rca_long = rca_df.stack().rename("rca").reset_index()
+        rca_long.columns = ["sh6", "reporter", "rca"]
+        rsca_long = rsca_df.stack().rename("rsca").reset_index()
+        rsca_long.columns = ["sh6", "reporter", "rsca"]
+
+        merged = val_long.merge(rca_long, on=["sh6", "reporter"]).merge(rsca_long, on=["sh6", "reporter"])
+        merged["ano"] = yr
+        merged["sh6_desc"] = merged["sh6"].map(sh6_descs)
+        merged["mundo_valor"] = merged["sh6"].map(X_wj)
+        merged["usa_world_ref"] = uses_world_ref
+
+        year_frames.append(merged)
+
+    if not year_frames:
+        return pd.DataFrame(columns=["ano", "reporter", "sh6", "sh6_desc", "valor", "mundo_valor", "rca", "rsca", "usa_world_ref"])
+
+    out = pd.concat(year_frames, ignore_index=True)
+    return out[["ano", "reporter", "sh6", "sh6_desc", "valor", "mundo_valor", "rca", "rsca", "usa_world_ref"]]
 
 
 def compute_state_diversification_potentials(
     comexstat_uf: pd.DataFrame, comtrade_metrics: pd.DataFrame, year: int
 ) -> pd.DataFrame:
-    base_uf = comexstat_uf[comexstat_uf["ano"] == year].copy() if "ano" in comexstat_uf.columns else comexstat_uf.copy()
-    if base_uf.empty or "uf" not in base_uf.columns:
+    """
+    Para o ano informado, monta a matriz completa Estado x Produto para todo
+    produto SH6 em que o Brasil tem vantagem comparativa nacional (RCA >= 1),
+    cruzando com o quanto cada estado já exporta daquele produto (podendo
+    ser zero). Isso é o que permite identificar, para CADA estado, os
+    produtos em que ele tem maior potencial de diversificação — mesmo que o
+    estado nunca tenha exportado aquele produto.
+
+    Colunas retornadas incluem: uf, sh6_cod, valor_fob (exportação atual do
+    estado nesse produto), uf_total (exportação total do estado, todos os
+    produtos), share_local (participação do produto na pauta do estado),
+    rca / rsca / mundo_valor (vindos do Comtrade, nível Brasil), potencial_score
+    e ja_exportado (bool).
+    """
+    if "ano" in comexstat_uf.columns:
+        base_uf = comexstat_uf[comexstat_uf["ano"] == year].copy()
+    else:
+        base_uf = comexstat_uf.copy()
+
+    required_cols = {"uf", "sh6_cod", "valor_fob"}
+    if base_uf.empty or not required_cols.issubset(base_uf.columns):
         return pd.DataFrame()
 
-    brazil_rep_name = next((r for r in comtrade_metrics["reporter"].unique() if str(r).lower() in ["brazil", "brasil", "bra"]), None)
-    if not brazil_rep_name:
-        brazil_rep_name = comtrade_metrics["reporter"].unique()[0]
+    brazil_rep_name = next(
+        (r for r in comtrade_metrics["reporter"].dropna().unique()
+         if normalize_text(r) in ("brazil", "brasil", "bra")),
+        None,
+    )
+    if brazil_rep_name is None:
+        return pd.DataFrame()
 
     br_metrics = comtrade_metrics[
         (comtrade_metrics["reporter"] == brazil_rep_name) & (comtrade_metrics["ano"] == year)
     ].copy()
+    if br_metrics.empty:
+        return pd.DataFrame()
 
-    br_metrics["vantagem_nacional"] = br_metrics["rca"] >= 1.0
+    advantage = br_metrics[br_metrics["rca"] >= 1.0].copy()
+    if advantage.empty:
+        return pd.DataFrame()
 
-    tot_uf = base_uf.groupby("uf")["valor_fob"].sum().to_dict()
-    
-    group_keys = ["uf", "sh6_cod"]
-    extra_cols = [c for c in ["sh6_desc", "cuci_desc", "cuci_cod", "isic_div_desc", "cgce1_desc"] if c in base_uf.columns]
-    
-    exp_uf = base_uf.groupby(group_keys + extra_cols, as_index=False)["valor_fob"].sum()
-    exp_uf["uf_total"] = exp_uf["uf"].map(tot_uf)
-    exp_uf["share_local"] = exp_uf["valor_fob"] / exp_uf["uf_total"]
+    # Mapa de descrições (SH6 -> CUCI/ISIC/CGCE), a partir da própria base de UF.
+    desc_cols = [c for c in COMEXSTAT_DESC_COLUMNS if c in base_uf.columns and c != "sh6_desc"]
+    if desc_cols:
+        desc_map = base_uf.groupby("sh6_cod")[desc_cols].first()
+    else:
+        desc_map = pd.DataFrame(index=pd.Index([], name="sh6_cod"))
 
-    merged = pd.merge(exp_uf, br_metrics[["sh6", "rca", "rsca", "mundo_valor"]], left_on="sh6_cod", right_on="sh6", how="right")
-    merged["uf"] = merged["uf"].fillna("Sem Exportação Registrada")
-    merged["valor_fob"] = merged["valor_fob"].fillna(0)
-    merged["share_local"] = merged["share_local"].fillna(0)
+    ufs = sorted(base_uf["uf"].dropna().unique().tolist())
+    sh6_advantage = advantage["sh6"].dropna().unique().tolist()
+    if not ufs or not sh6_advantage:
+        return pd.DataFrame()
 
-    merged["potencial_score"] = np.where(
-        merged["rca"] >= 1.0,
-        merged["rca"] * (1 - merged["share_local"]),
-        0
-    )
+    # Produto cartesiano Estado x Produto-com-vantagem-nacional.
+    grid = pd.MultiIndex.from_product([ufs, sh6_advantage], names=["uf", "sh6_cod"]).to_frame(index=False)
 
-    return merged.sort_values("potencial_score", ascending=False)
+    uf_totals = base_uf.groupby("uf")["valor_fob"].sum()
+    grid["uf_total"] = grid["uf"].map(uf_totals).fillna(0.0)
+
+    actual_exports = base_uf.groupby(["uf", "sh6_cod"], as_index=False)["valor_fob"].sum()
+    grid = grid.merge(actual_exports, on=["uf", "sh6_cod"], how="left")
+    grid["valor_fob"] = grid["valor_fob"].fillna(0.0)
+    grid["share_local"] = np.where(grid["uf_total"] > 0, grid["valor_fob"] / grid["uf_total"], 0.0)
+
+    adv_slim = advantage[["sh6", "sh6_desc", "rca", "rsca", "mundo_valor"]].rename(columns={"sh6": "sh6_cod"})
+    grid = grid.merge(adv_slim, on="sh6_cod", how="left")
+
+    if not desc_map.empty:
+        grid = grid.merge(desc_map, on="sh6_cod", how="left")
+
+    grid["potencial_score"] = grid["rca"] * (1 - grid["share_local"])
+    grid["ja_exportado"] = grid["valor_fob"] > 0
+
+    return grid.sort_values("potencial_score", ascending=False)
 
 
 # ==============================================================================
 # 5. ESTRUTURA VISUAL (DESIGN CUPERTINO, PASTEL & GLASSMORPHISM)
 # ==============================================================================
-
-def _hex_to_rgba(hex_color: str, alpha: float) -> str:
-    hex_color = hex_color.lstrip("#")
-    r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
-    return f"rgba({r}, {g}, {b}, {alpha})"
-
 
 def inject_custom_css():
     st.markdown(
@@ -357,7 +501,6 @@ def inject_custom_css():
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
 
-        /* Global Reset & Cupertino Canvas */
         html, body, [class*="css"] {
             font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Plus Jakarta Sans", sans-serif;
             background-color: #f6f8fa;
@@ -370,7 +513,6 @@ def inject_custom_css():
             max-width: 95%;
         }
 
-        /* Glassmorphism Sidebar */
         [data-testid="stSidebar"] {
             background: rgba(255, 255, 255, 0.45) !important;
             backdrop-filter: blur(25px) saturate(190%) !important;
@@ -378,7 +520,6 @@ def inject_custom_css():
             border-right: 1px solid rgba(255, 255, 255, 0.7) !important;
         }
 
-        /* Glass Dashboard Base Cards */
         .glass-card {
             background: rgba(255, 255, 255, 0.65);
             backdrop-filter: blur(20px) saturate(180%);
@@ -396,7 +537,6 @@ def inject_custom_css():
             box-shadow: 0 14px 40px 0 rgba(0, 0, 0, 0.06);
         }
 
-        /* Stat Metrics Bar (Estilo Imagem 1 e 2) */
         .stat-row {
             display: flex;
             gap: 32px;
@@ -428,7 +568,6 @@ def inject_custom_css():
             letter-spacing: 0.05em;
         }
 
-        /* Quadrantes CNI Pastel & Glass */
         .quadrant-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -524,7 +663,6 @@ def inject_custom_css():
             letter-spacing: 0.01em;
         }
 
-        /* Glass Tables (Mac OS Style) */
         .cni-table-wrapper {
             background: rgba(255, 255, 255, 0.6);
             backdrop-filter: blur(20px) saturate(180%);
@@ -534,37 +672,6 @@ def inject_custom_css():
             box-shadow: 0 4px 20px rgba(0, 0, 0, 0.02);
         }
 
-        .cni-table {
-            width: 100%;
-            border-collapse: separate;
-            border-spacing: 0;
-            font-size: 0.86rem;
-        }
-
-        .cni-table th {
-            text-align: left;
-            font-size: 0.72rem;
-            color: #8e8e93;
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
-            padding: 14px 18px;
-            background: rgba(245, 245, 247, 0.6);
-            border-bottom: 1px solid rgba(0, 0, 0, 0.05);
-            font-weight: 700;
-        }
-
-        .cni-table td {
-            padding: 14px 18px;
-            border-bottom: 1px solid rgba(0, 0, 0, 0.03);
-            vertical-align: middle;
-            color: #1c1c1e;
-        }
-
-        .cni-table tr:hover td {
-            background: rgba(255, 255, 255, 0.5);
-        }
-
-        /* Cupertino Custom Buttons */
         .stButton>button {
             border-radius: 14px !important;
             font-weight: 600 !important;
@@ -583,7 +690,6 @@ def inject_custom_css():
     )
 
 
-# Palette Pastel Inspirada na Imagem 2 (CNI)
 PASTEL_COLORS = {
     "green_main": "#10b981",
     "green_bg": "rgba(236, 253, 245, 0.75)",
@@ -626,6 +732,7 @@ if file_comtrade:
         raw_ct = read_any_file(file_comtrade.getvalue(), file_comtrade.name)
         st.session_state["raw_comtrade"] = raw_ct
         st.session_state["_file_comtrade_name"] = file_comtrade.name
+        st.session_state.pop("comtrade_tidy", None)
 
 if file_comexstat:
     if st.session_state.get("_file_comexstat_name") != file_comexstat.name:
@@ -649,44 +756,80 @@ if "raw_comtrade" in st.session_state:
         c_rep = st.selectbox("Reporter", cols, index=cols.index(guesses["reporter"]) if guesses["reporter"] in cols else 0)
         c_prt = st.selectbox("Partner", cols, index=cols.index(guesses["partner"]) if guesses["partner"] in cols else 0)
         c_sh6 = st.selectbox("Código SH6", cols, index=cols.index(guesses["sh6"]) if guesses["sh6"] in cols else 0)
-        c_desc = st.selectbox("Descrição SH6", ["(Nenhuma)"] + cols, index=(cols.index(guesses["sh6_desc"])+1) if guesses["sh6_desc"] in cols else 0)
+        c_desc = st.selectbox("Descrição SH6", ["(Nenhuma)"] + cols, index=(cols.index(guesses["sh6_desc"]) + 1) if guesses["sh6_desc"] in cols else 0)
         c_val = st.selectbox("Valor (US$)", cols, index=cols.index(guesses["value"]) if guesses["value"] in cols else 0)
 
         partners_list = sorted(df_ct[c_prt].dropna().astype(str).unique().tolist())
-        world_vals = st.multiselect("Valores equivalentes a 'World':", partners_list, default=[p for p in partners_list if "world" in p.lower() or "mundo" in p.lower()])
+        default_world = [p for p in partners_list if is_world_label(p)]
+        world_vals = st.multiselect("Valores equivalentes a 'World' (parceiro):", partners_list, default=default_world)
 
         reporters_list = sorted(df_ct[c_rep].dropna().astype(str).unique().tolist())
-        sel_reporters = st.multiselect("Filtrar Países Reporters (Vazio = Todos):", reporters_list, default=[])
+        sel_reporters = st.multiselect(
+            "Filtrar Países Reporters (vazio = todos):",
+            reporters_list,
+            default=[],
+            help="Uma linha de reporter 'World'/'Mundo', se existir na base, é sempre mantida "
+                 "e usada como referência do total mundial para o cálculo do RCA — mesmo que "
+                 "você não a selecione aqui.",
+        )
 
-        if st.button("Processar Métricas Comtrade", type="primary"):
-            desc_col = None if c_desc == "(Nenhuma)" else c_desc
-            tidy_ct = standardize_comtrade(df_ct, c_yr, c_rep, c_prt, c_sh6, desc_col, c_val, world_vals, sel_reporters)
-            st.session_state["comtrade_tidy"] = tidy_ct
-            st.success("Dados do UN Comtrade processados com sucesso!")
+        selected_cols = [c_yr, c_rep, c_prt, c_sh6, c_val]
+        has_dupe = len(selected_cols) != len(set(selected_cols))
+        if has_dupe:
+            st.warning("⚠️ Duas ou mais configurações apontam para a mesma coluna. Revise as seleções acima.")
+
+        if st.button("Processar Métricas Comtrade", type="primary", disabled=has_dupe or not world_vals):
+            if not world_vals:
+                st.error("Selecione ao menos um valor de 'partner' equivalente a 'World'.")
+            else:
+                try:
+                    desc_col = None if c_desc == "(Nenhuma)" else c_desc
+                    tidy_ct = standardize_comtrade(df_ct, c_yr, c_rep, c_prt, c_sh6, desc_col, c_val, world_vals, sel_reporters)
+                    if tidy_ct.empty:
+                        st.error("Nenhum registro restou após o filtro de 'World'. Verifique a seleção de parceiros.")
+                    else:
+                        st.session_state["comtrade_tidy"] = tidy_ct
+                        st.success("Dados do UN Comtrade processados com sucesso!")
+                except Exception as exc:
+                    st.error(f"Falha ao processar a base do Comtrade: {exc}")
 
 # ==============================================================================
-# 7. MÓDULOS DA APLICAÇÃO (LAYOUTS REFINADOS COM GLASS & PASTEL)
+# 7. MÓDULOS DA APLICAÇÃO
 # ==============================================================================
 
 # --- PÁGINA 1: UN COMTRADE RCA / RSCA ---
 def page_comtrade_global():
     st.title("📊 Análise de RCA e RSCA Global (UN Comtrade)")
-    st.caption("Cálculo direto de Vantagem Comparativa Revelada (Balassa) e Vantagem Comparativa Revelada Simétrica (Laursen).")
+    st.caption("Cálculo de Vantagem Comparativa Revelada (Balassa) e Vantagem Comparativa Revelada Simétrica (Laursen).")
 
     if "comtrade_tidy" not in st.session_state:
         st.info("👈 Por favor, carregue e processe o arquivo do UN Comtrade na barra lateral.")
         return
 
     tidy = st.session_state["comtrade_tidy"]
-    anos = sorted(tidy["ano"].dropna().unique().tolist())
-    
+    anos = sorted(int(a) for a in tidy["ano"].dropna().unique().tolist())
+    if not anos:
+        st.error("A base processada não contém anos válidos.")
+        return
+
     col_a, col_b = st.columns(2)
     with col_a:
         start_year = st.selectbox("Ano de Início", anos, index=0)
     with col_b:
-        end_year = st.selectbox("Ano Final", anos, index=len(anos)-1)
+        end_year = st.selectbox("Ano Final", anos, index=len(anos) - 1)
 
-    df_metrics = compute_comtrade_metrics(tidy, start_year, end_year)
+    years_range = [y for y in anos if start_year <= y <= end_year] or [start_year]
+    df_metrics = compute_comtrade_metrics(tidy, tuple(years_range))
+
+    if df_metrics.empty:
+        st.warning("Não há dados suficientes para o intervalo de anos selecionado.")
+        return
+
+    if not df_metrics["usa_world_ref"].iloc[0]:
+        st.caption(
+            "ℹ️ Nenhuma linha de reporter 'World'/'Mundo' foi encontrada na base. O total mundial "
+            "(denominador do RCA) está sendo aproximado pela soma dos reporters presentes nos dados."
+        )
 
     f_col1, f_col2, f_col3 = st.columns(3)
     with f_col1:
@@ -704,7 +847,6 @@ def page_comtrade_global():
     if only_advantage:
         filtered_df = filtered_df[filtered_df["rca"] >= 1.0]
 
-    # Glass Stat Banner
     html_stats = f"""
     <div class="stat-row">
         <div class="stat-item">
@@ -725,30 +867,50 @@ def page_comtrade_global():
 
     st.subheader("Resultados Detalhados")
     st.dataframe(
-        filtered_df.style.format({
+        filtered_df.drop(columns=["usa_world_ref"]).style.format({
             "valor": "${:,.2f}",
             "mundo_valor": "${:,.2f}",
             "rca": "{:.4f}",
-            "rsca": "{:.4f}"
+            "rsca": "{:.4f}",
         }),
-        use_container_width=True, height=400
+        use_container_width=True, height=400,
     )
 
     fig = px.scatter(
         filtered_df, x="rca", y="rsca", color="reporter", hover_name="sh6_desc",
         title="Distribuição entre RCA (Balassa) e RSCA (Laursen)",
         labels={"rca": "Índice RCA", "rsca": "Índice RSCA (-1 a +1)"},
-        template="plotly_white"
+        template="plotly_white",
     )
     fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
     fig.add_hline(y=0, line_dash="dash", line_color=PASTEL_COLORS["red_main"], annotation_text="Ponto Neutro (RSCA = 0)")
     st.plotly_chart(fig, use_container_width=True)
 
+    if len(years_range) > 1:
+        st.subheader("📈 Evolução Temporal do RCA")
+        c1, c2 = st.columns(2)
+        with c1:
+            trend_reporter = st.selectbox("País:", sorted(df_metrics["reporter"].unique()), key="trend_rep")
+        opts_sh6 = sorted(df_metrics[df_metrics["reporter"] == trend_reporter]["sh6"].unique())
+        with c2:
+            trend_sh6 = st.selectbox("Produto (SH6):", opts_sh6, key="trend_sh6")
+
+        trend_df = df_metrics[(df_metrics["reporter"] == trend_reporter) & (df_metrics["sh6"] == trend_sh6)].sort_values("ano")
+        if not trend_df.empty:
+            fig_trend = px.line(
+                trend_df, x="ano", y=["rca", "rsca"], markers=True,
+                title=f"Evolução do RCA/RSCA — {trend_reporter} — SH6 {trend_sh6}",
+                template="plotly_white",
+            )
+            fig_trend.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", legend_title_text="Índice")
+            fig_trend.add_hline(y=1.0, line_dash="dot", line_color=PASTEL_COLORS["blue_main"])
+            st.plotly_chart(fig_trend, use_container_width=True)
+
 
 # --- PÁGINA 2: CRUZAMENTO BRASIL COMEXSTAT X COMTRADE ---
 def page_comexstat_cross():
     st.title("🇧🇷 Cruzamento das Exportações do Brasil com Competitividade Global")
-    st.caption("Cruzamento entre a pauta detalhada do ComexStat e os índices globais de RCA/RSCA.")
+    st.caption("Cruzamento entre a pauta detalhada do ComexStat e os índices globais de RCA/RSCA do Brasil.")
 
     if "comexstat" not in st.session_state or "comtrade_tidy" not in st.session_state:
         st.warning("⚠️ É necessário carregar AMBOS os arquivos (ComexStat Brasil e UN Comtrade) na barra lateral.")
@@ -757,12 +919,25 @@ def page_comexstat_cross():
     cs = st.session_state["comexstat"]
     ct = st.session_state["comtrade_tidy"]
 
-    anos_cs = sorted(cs["ano"].dropna().unique().tolist())
-    selected_year = st.selectbox("Selecione o Ano para Análise Cruzada:", anos_cs, index=len(anos_cs)-1)
+    if "ano" not in cs.columns or "sh6_cod" not in cs.columns:
+        st.error("A base do ComexStat Brasil precisa conter colunas de Ano e Código SH6.")
+        return
 
-    ct_metrics = compute_comtrade_metrics(ct, selected_year, selected_year)
-    
-    brazil_rep = next((r for r in ct_metrics["reporter"].unique() if str(r).lower() in ["brazil", "brasil", "bra"]), ct_metrics["reporter"].unique()[0])
+    anos_cs = sorted(int(a) for a in cs["ano"].dropna().unique().tolist())
+    selected_year = st.selectbox("Selecione o Ano para Análise Cruzada:", anos_cs, index=len(anos_cs) - 1)
+
+    ct_metrics = compute_comtrade_metrics(ct, (selected_year,))
+    if ct_metrics.empty:
+        st.warning("Não há dados do Comtrade para o ano selecionado.")
+        return
+
+    brazil_rep = next(
+        (r for r in ct_metrics["reporter"].unique() if normalize_text(r) in ("brazil", "brasil", "bra")),
+        None,
+    )
+    if brazil_rep is None:
+        st.error("Não foi encontrado um reporter 'Brazil'/'Brasil' nos dados do Comtrade processados.")
+        return
     br_ct = ct_metrics[ct_metrics["reporter"] == brazil_rep].copy()
 
     merged = pd.merge(cs[cs["ano"] == selected_year], br_ct[["sh6", "rca", "rsca", "mundo_valor"]], left_on="sh6_cod", right_on="sh6", how="left")
@@ -791,7 +966,7 @@ def page_comexstat_cross():
 
     val_tot = df_f["valor_fob"].sum()
     produtos_vantagem = df_f[df_f["rca"] >= 1.0]["sh6_cod"].nunique()
-    
+
     html_stats = f"""
     <div class="stat-row">
         <div class="stat-item">
@@ -818,7 +993,7 @@ def page_comexstat_cross():
         "ISIC Divisão": "isic_div_desc",
         "ISIC Seção": "isic_sec_desc",
         "CGCE Nível 1": "cgce1_desc",
-        "CGCE Nível 2": "cgce2_desc"
+        "CGCE Nível 2": "cgce2_desc",
     }
     selected_col = col_map[group_opt]
 
@@ -827,7 +1002,7 @@ def page_comexstat_cross():
             Valor_FOB=("valor_fob", "sum"),
             RCA_Medio=("rca", "mean"),
             RSCA_Medio=("rsca", "mean"),
-            N_Produtos=("sh6_cod", "nunique")
+            N_Produtos=("sh6_cod", "nunique"),
         ).reset_index().sort_values("Valor_FOB", ascending=False)
 
         fig_sec = px.bar(
@@ -835,18 +1010,20 @@ def page_comexstat_cross():
             color="RSCA_Medio", color_continuous_scale=["#ef4444", "#f59e0b", "#10b981"],
             title=f"Top 15 Setores por Valor Exportado ({group_opt}) e RSCA Médio",
             labels={"Valor_FOB": "Valor FOB (US$)", selected_col: "Setor", "RSCA_Medio": "RSCA Médio"},
-            template="plotly_white"
+            template="plotly_white",
         )
         fig_sec.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
         st.plotly_chart(fig_sec, use_container_width=True)
 
         st.dataframe(agg_sector.style.format({"Valor_FOB": "${:,.2f}", "RCA_Medio": "{:.2f}", "RSCA_Medio": "{:.2f}"}), use_container_width=True)
+    else:
+        st.info(f"A coluna '{group_opt}' não foi encontrada na base carregada.")
 
 
 # --- PÁGINA 3: POTENCIAL DE DIVERSIFICAÇÃO POR ESTADO (UF) ---
 def page_state_diversification():
     st.title("🗺️ Potencial de Diversificação Exportadora por Estado (UF)")
-    st.caption("Cruzamento subnacional para identificar produtos com alta competitividade nacional (RCA >= 1) subaproveitados nos estados.")
+    st.caption("Cruzamento subnacional para identificar produtos com alta competitividade nacional (RCA ≥ 1) subaproveitados nos estados.")
 
     if "comexstat_uf" not in st.session_state or "comtrade_tidy" not in st.session_state:
         st.warning("⚠️ É necessário carregar a planilha do ComexStat por Estado (UF) e o UN Comtrade.")
@@ -855,23 +1032,33 @@ def page_state_diversification():
     cs_uf = st.session_state["comexstat_uf"]
     ct = st.session_state["comtrade_tidy"]
 
-    anos_uf = sorted(cs_uf["ano"].dropna().unique().tolist())
-    selected_year = st.selectbox("Ano de Análise Subnacional:", anos_uf, index=len(anos_uf)-1)
+    if "ano" not in cs_uf.columns or "uf" not in cs_uf.columns or "sh6_cod" not in cs_uf.columns:
+        st.error("A base do ComexStat por Estado precisa conter colunas de Ano, UF e Código SH6.")
+        return
 
-    ct_metrics = compute_comtrade_metrics(ct, selected_year, selected_year)
+    anos_uf = sorted(int(a) for a in cs_uf["ano"].dropna().unique().tolist())
+    selected_year = st.selectbox("Ano de Análise Subnacional:", anos_uf, index=len(anos_uf) - 1)
+
+    ct_metrics = compute_comtrade_metrics(ct, (selected_year,))
+    if ct_metrics.empty:
+        st.warning("Não há dados do Comtrade para o ano selecionado.")
+        return
 
     df_potencial = compute_state_diversification_potentials(cs_uf, ct_metrics, selected_year)
 
     if df_potencial.empty:
-        st.error("Não foi possível calcular o potencial com os dados fornecidos.")
+        st.error(
+            "Não foi possível calcular o potencial com os dados fornecidos. Verifique se o Brasil "
+            "aparece como reporter no Comtrade e se há produtos com RCA ≥ 1 no ano selecionado."
+        )
         return
 
-    # --- QUADRANTES DE DIVERSIFICAÇÃO ESTADUAL (INSPIRAÇÃO IMAGEM 2 - CNI) ---
+    # --- QUADRANTES DE DIVERSIFICAÇÃO ESTADUAL ---
     st.subheader("🧭 Radar de Oportunidades Estaduais (Matriz de Vantagem & Presença)")
-    
-    n_alto_potencial = len(df_potencial[df_potencial["potencial_score"] > 1.0])
-    n_vantagem_nacional = len(df_potencial[df_potencial["rca"] >= 1.0])
-    val_mercado_oportunidade = df_potencial[df_potencial["potencial_score"] > 1.0]["mundo_valor"].sum()
+
+    n_alto_potencial = df_potencial[(df_potencial["potencial_score"] > 1.0) & (~df_potencial["ja_exportado"])]["sh6_cod"].nunique()
+    n_vantagem_nacional = df_potencial["sh6_cod"].nunique()
+    val_mercado_oportunidade = df_potencial[(df_potencial["potencial_score"] > 1.0) & (~df_potencial["ja_exportado"])].drop_duplicates("sh6_cod")["mundo_valor"].sum()
 
     html_quadrants = f"""
     <div class="quadrant-grid">
@@ -880,12 +1067,12 @@ def page_state_diversification():
                 <div class="qc-title" style="color:{PASTEL_COLORS['green_main']};">
                     <span class="qc-dot" style="background:{PASTEL_COLORS['green_main']};"></span>Alta Oportunidade Local
                 </div>
-                <div class="qc-desc">Produtos onde o Brasil possui vantagem comparativa global (RCA ≥ 1), mas o estado possui produção/exportação nula ou inexpressiva.</div>
+                <div class="qc-desc">Combinações Estado x Produto em que o Brasil possui vantagem comparativa global (RCA ≥ 1), mas o estado ainda não exporta o produto.</div>
             </div>
             <div class="qc-bottom">
                 <div>
                     <div class="qc-count">{n_alto_potencial:,}</div>
-                    <div class="qc-count-label">produtos chave</div>
+                    <div class="qc-count-label">produtos-chave (média nacional)</div>
                 </div>
                 <div>
                     <div class="qc-value">{format_usd(val_mercado_oportunidade)}</div>
@@ -899,7 +1086,7 @@ def page_state_diversification():
                 <div class="qc-title" style="color:{PASTEL_COLORS['blue_main']};">
                     <span class="qc-dot" style="background:{PASTEL_COLORS['blue_main']};"></span>Vantagem Comparativa Nacional
                 </div>
-                <div class="qc-desc">Total de produtos no portfólio brasileiro com alto índice de especialização e inserção no comércio internacional.</div>
+                <div class="qc-desc">Total de produtos no portfólio brasileiro com alto índice de especialização e inserção no comércio internacional, avaliados em todos os estados.</div>
             </div>
             <div class="qc-bottom">
                 <div>
@@ -917,58 +1104,83 @@ def page_state_diversification():
     st.markdown(html_quadrants, unsafe_allow_html=True)
 
     st.subheader("🏆 Ranking de Estados por Score de Potencial de Diversificação")
-    
+
     rank_uf = df_potencial.groupby("uf").agg(
         Score_Potencial_Total=("potencial_score", "sum"),
-        Oportunidades_SH6=("sh6_cod", "nunique"),
-        Exportacao_Atual_FOB=("valor_fob", "sum")
+        Produtos_Nao_Explorados=("ja_exportado", lambda s: int((~s).sum())),
+        Exportacao_Atual_FOB=("uf_total", "first"),
     ).reset_index().sort_values("Score_Potencial_Total", ascending=False)
 
     fig_uf_rank = px.bar(
-        rank_uf[rank_uf["uf"] != "Sem Exportação Registrada"], x="Score_Potencial_Total", y="uf", orientation="h",
+        rank_uf, x="Score_Potencial_Total", y="uf", orientation="h",
         color="Exportacao_Atual_FOB", color_continuous_scale=["#eff6ff", "#3b82f6", "#1d4ed8"],
         title="Estados com Maior Potencial de Diversificação",
-        template="plotly_white"
+        labels={"Score_Potencial_Total": "Score de Potencial", "uf": "Estado", "Exportacao_Atual_FOB": "Exportação Atual (US$)"},
+        template="plotly_white",
     )
-    fig_uf_rank.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+    fig_uf_rank.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", yaxis=dict(categoryorder="total ascending"))
     st.plotly_chart(fig_uf_rank, use_container_width=True)
+
+    st.dataframe(
+        rank_uf.style.format({"Score_Potencial_Total": "{:,.2f}", "Exportacao_Atual_FOB": "${:,.2f}"}),
+        use_container_width=True,
+    )
 
     st.divider()
 
     st.subheader("🔍 Detalhamento e Segmentação por Estado (UF)")
-    
-    col_sel1, col_sel2, col_sel3 = st.columns(3)
+
+    col_sel1, col_sel2, col_sel3, col_sel4 = st.columns(4)
     with col_sel1:
         uf_target = st.selectbox("Selecione o Estado (UF):", sorted(df_potencial["uf"].unique()))
-    
+
     df_uf_filtered = df_potencial[df_potencial["uf"] == uf_target]
 
     with col_sel2:
         cuci_options = sorted(df_uf_filtered["cuci_desc"].dropna().unique()) if "cuci_desc" in df_uf_filtered.columns else []
         cuci_target = st.multiselect("Filtrar por CUCI Grupo:", cuci_options)
-
     with col_sel3:
-        only_new = st.checkbox("Exibir Apenas Produtos NÃO Exportados Atualmente pelo Estado", value=False)
+        sh6_options = sorted(df_uf_filtered["sh6_cod"].dropna().unique())
+        sh6_target = st.multiselect("Filtrar por SH6:", sh6_options)
+    with col_sel4:
+        only_new = st.checkbox("Somente produtos NÃO exportados pelo estado", value=False)
 
     df_uf_seg = df_uf_filtered.copy()
     if cuci_target and "cuci_desc" in df_uf_seg.columns:
         df_uf_seg = df_uf_seg[df_uf_seg["cuci_desc"].isin(cuci_target)]
+    if sh6_target:
+        df_uf_seg = df_uf_seg[df_uf_seg["sh6_cod"].isin(sh6_target)]
     if only_new:
-        df_uf_seg = df_uf_seg[df_uf_seg["valor_fob"] == 0]
+        df_uf_seg = df_uf_seg[~df_uf_seg["ja_exportado"]]
 
     st.markdown(f"### Oportunidades Prioritárias para **{uf_target}**")
 
-    disp_cols = ["sh6_cod", "sh6_desc", "cuci_desc", "rca", "rsca", "valor_fob", "potencial_score"]
+    top_n = df_uf_seg.sort_values("potencial_score", ascending=False).head(15)
+    if not top_n.empty:
+        label_col = "sh6_desc" if "sh6_desc" in top_n.columns and top_n["sh6_desc"].notna().any() else "sh6_cod"
+        color_col = "cuci_desc" if "cuci_desc" in top_n.columns and top_n["cuci_desc"].notna().any() else None
+        fig_top = px.bar(
+            top_n, x="potencial_score", y=label_col, orientation="h",
+            color=color_col,
+            title=f"Top produtos por potencial de diversificação — {uf_target}",
+            labels={"potencial_score": "Score de Potencial", label_col: "Produto (SH6)", "cuci_desc": "CUCI Grupo"},
+            template="plotly_white",
+        )
+        fig_top.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", yaxis=dict(categoryorder="total ascending"))
+        st.plotly_chart(fig_top, use_container_width=True)
+
+    disp_cols = ["sh6_cod", "sh6_desc", "cuci_desc", "rca", "rsca", "valor_fob", "share_local", "potencial_score", "ja_exportado"]
     available_disp_cols = [c for c in disp_cols if c in df_uf_seg.columns]
 
     st.dataframe(
-        df_uf_seg[available_disp_cols].head(30).style.format({
+        df_uf_seg[available_disp_cols].sort_values("potencial_score", ascending=False).head(50).style.format({
             "rca": "{:.2f}",
             "rsca": "{:.2f}",
             "valor_fob": "${:,.2f}",
-            "potencial_score": "{:.2f}"
+            "share_local": "{:.2%}",
+            "potencial_score": "{:.2f}",
         }),
-        use_container_width=True, height=400
+        use_container_width=True, height=420,
     )
 
 
