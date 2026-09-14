@@ -728,42 +728,21 @@ file_comtrade = st.sidebar.file_uploader("1. UN Comtrade (CSV, XLSX, Parquet, JS
 file_comexstat = st.sidebar.file_uploader("2. ComexStat Brasil (Nacional)", type=["csv", "xlsx", "xls", "parquet"])
 file_comexstat_uf = st.sidebar.file_uploader("3. ComexStat por Estado (UF)", type=["csv", "xlsx", "xls", "parquet"])
 
+# --- Mapeamento Fixo do UN Comtrade ---
+COMTRADE_FIXED_COLS = {
+    "year": "refYear",
+    "reporter": "ReporterDesc",
+    "partner": "PartnerDesc",
+    "sh6": "cmdCode",
+    "sh6_desc": "cmdDesc",
+}
+
 if file_comtrade:
     if st.session_state.get("_file_comtrade_name") != file_comtrade.name:
         raw_ct = read_any_file(file_comtrade.getvalue(), file_comtrade.name)
         st.session_state["raw_comtrade"] = raw_ct
         st.session_state["_file_comtrade_name"] = file_comtrade.name
         st.session_state.pop("comtrade_tidy", None)
-
-        # Tenta inferir colunas e processar automaticamente
-        guesses = guess_comtrade_columns(raw_ct)
-        cols = list(raw_ct.columns)
-
-        if all(guesses[k] in cols for k in ["year", "reporter", "partner", "sh6", "value"]):
-            partners_list = sorted(raw_ct[guesses["partner"]].dropna().astype(str).unique().tolist())
-            world_vals = [p for p in partners_list if is_world_label(p)]
-            
-            # Se não identificar rótulo com a palavra 'world'/'mundo', busca agregados padrão (0 ou Total)
-            if not world_vals:
-                world_vals = [p for p in partners_list if str(p).lower() in ["world", "mundo", "total", "all partners", "0", "000"]]
-
-            if world_vals:
-                try:
-                    tidy_ct = standardize_comtrade(
-                        df=raw_ct,
-                        year_col=guesses["year"],
-                        reporter_col=guesses["reporter"],
-                        partner_col=guesses["partner"],
-                        sh6_col=guesses["sh6"],
-                        sh6desc_col=guesses["sh6_desc"],
-                        value_col=guesses["value"],
-                        world_partner_values=world_vals,
-                        selected_reporters=[]
-                    )
-                    if not tidy_ct.empty:
-                        st.session_state["comtrade_tidy"] = tidy_ct
-                except Exception:
-                    pass
 
 if file_comexstat:
     if st.session_state.get("_file_comexstat_name") != file_comexstat.name:
@@ -777,45 +756,63 @@ if file_comexstat_uf:
         st.session_state["comexstat_uf"] = standardize_comexstat(raw_cs_uf)
         st.session_state["_file_comexstat_uf_name"] = file_comexstat_uf.name
 
+# --- Processamento e Controles da Sidebar ---
 if "raw_comtrade" in st.session_state:
     df_ct = st.session_state["raw_comtrade"]
-    guesses = guess_comtrade_columns(df_ct)
     cols = list(df_ct.columns)
+    
+    # Mapeamento com fallback (caso o CSV esteja em minúsculo ou com variações)
+    col_yr = find_column(df_ct, ["refyear"]) or COMTRADE_FIXED_COLS["year"]
+    col_rep = find_column(df_ct, ["reporterdesc"]) or COMTRADE_FIXED_COLS["reporter"]
+    col_prt = find_column(df_ct, ["partnerdesc"]) or COMTRADE_FIXED_COLS["partner"]
+    col_sh6 = find_column(df_ct, ["cmdcode"]) or COMTRADE_FIXED_COLS["sh6"]
+    col_desc = find_column(df_ct, ["cmddesc"]) or COMTRADE_FIXED_COLS["sh6_desc"]
 
-    with st.sidebar.expander("⚙️ Configurações UN Comtrade", expanded=False):
-        c_yr = st.selectbox("Ano", cols, index=cols.index(guesses["year"]) if guesses["year"] in cols else 0)
-        c_rep = st.selectbox("Reporter", cols, index=cols.index(guesses["reporter"]) if guesses["reporter"] in cols else 0)
-        c_prt = st.selectbox("Partner", cols, index=cols.index(guesses["partner"]) if guesses["partner"] in cols else 0)
-        c_sh6 = st.selectbox("Código SH6", cols, index=cols.index(guesses["sh6"]) if guesses["sh6"] in cols else 0)
-        c_desc = st.selectbox("Descrição SH6", ["(Nenhuma)"] + cols, index=(cols.index(guesses["sh6_desc"]) + 1) if guesses["sh6_desc"] in cols else 0)
-        c_val = st.selectbox("Valor (US$)", cols, index=cols.index(guesses["value"]) if guesses["value"] in cols else 0)
+    with st.sidebar.expander("⚙️ Configurações UN Comtrade", expanded=True):
+        st.caption("📌 **Campos fixos:** refYear, ReporterDesc, PartnerDesc, cmdCode, cmdDesc")
+        
+        # Seleção dinâmica apenas para o Valor (PrimaryValue, FOB, CIF, etc.)
+        value_candidates = [c for c in cols if any(v in normalize_text(c) for v in ["value", "val", "fob", "cif", "primaryvalue"])]
+        default_val_idx = cols.index(value_candidates[0]) if value_candidates else 0
+        c_val = st.selectbox("Selecione o Campo de Valor:", cols, index=default_val_idx)
 
-        partners_list = sorted(df_ct[c_prt].dropna().astype(str).unique().tolist())
-        default_world = [p for p in partners_list if is_world_label(p)]
-        if not default_world:
-            default_world = [p for p in partners_list if str(p).lower() in ["world", "mundo", "total", "all partners", "0", "000"]]
-            
-        world_vals = st.multiselect("Valores equivalentes a 'World' (parceiro):", partners_list, default=default_world)
+        # Filtro de Parceiro (World)
+        if col_prt in df_ct.columns:
+            partners_list = sorted(df_ct[col_prt].dropna().astype(str).unique().tolist())
+            default_world = [p for p in partners_list if is_world_label(p)]
+            if not default_world:
+                default_world = [p for p in partners_list if str(p).lower() in ["world", "mundo", "total", "all partners", "0", "000"]]
+            world_vals = st.multiselect("Valores equivalentes a 'World' (parceiro):", partners_list, default=default_world)
+        else:
+            world_vals = []
 
-        reporters_list = sorted(df_ct[c_rep].dropna().astype(str).unique().tolist())
-        sel_reporters = st.multiselect(
-            "Filtrar Países Reporters (vazio = todos):",
-            reporters_list,
-            default=[],
-        )
+        # Filtro de Reporter
+        if col_rep in df_ct.columns:
+            reporters_list = sorted(df_ct[col_rep].dropna().astype(str).unique().tolist())
+            sel_reporters = st.multiselect("Filtrar Países Reporters (vazio = todos):", reporters_list, default=[])
+        else:
+            sel_reporters = []
 
-        selected_cols = [c_yr, c_rep, c_prt, c_sh6, c_val]
-        has_dupe = len(selected_cols) != len(set(selected_cols))
-        if has_dupe:
-            st.warning("⚠️ Duas ou mais configurações apontam para a mesma coluna. Revise as seleções acima.")
-
-        if st.button("Re-processar Métricas Comtrade", type="primary", disabled=has_dupe or not world_vals):
-            if not world_vals:
-                st.error("Selecione ao menos um valor de 'partner' equivalente a 'World'.")
-            else:
+        # Processamento automático ou re-processamento por botão
+        missing_cols = [c for c in [col_yr, col_rep, col_prt, col_sh6] if c not in df_ct.columns]
+        
+        if missing_cols:
+            st.error(f"⚠️ As seguintes colunas obrigatórias não foram encontradas na planilha: {', '.join(missing_cols)}")
+        else:
+            # Processa automaticamente na primeira carga
+            if "comtrade_tidy" not in st.session_state and world_vals:
                 try:
-                    desc_col = None if c_desc == "(Nenhuma)" else c_desc
-                    tidy_ct = standardize_comtrade(df_ct, c_yr, c_rep, c_prt, c_sh6, desc_col, c_val, world_vals, sel_reporters)
+                    st.session_state["comtrade_tidy"] = standardize_comtrade(
+                        df_ct, col_yr, col_rep, col_prt, col_sh6, col_desc, c_val, world_vals, sel_reporters
+                    )
+                except Exception as e:
+                    st.error(f"Erro ao processar automaticamente: {e}")
+
+            if st.button("Aplicar / Re-processar Métricas", type="primary", disabled=not world_vals):
+                try:
+                    tidy_ct = standardize_comtrade(
+                        df_ct, col_yr, col_rep, col_prt, col_sh6, col_desc, c_val, world_vals, sel_reporters
+                    )
                     if tidy_ct.empty:
                         st.error("Nenhum registro restou após o filtro de 'World'. Verifique a seleção de parceiros.")
                     else:
