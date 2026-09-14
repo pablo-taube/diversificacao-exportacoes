@@ -2,7 +2,7 @@
 """
 ==============================================================================
  SISTEMA DE ANÁLISE DE DIVERSIFICAÇÃO DAS EXPORTAÇÕES BRASILEIRAS
- (Glassmorfismo Cupertino) — v3 (Cálculo Bilateral por Partner)
+ (Glassmorfismo Cupertino) — v4 (Gráficos Separados para RCA e RSCA)
 ==============================================================================
 """
 from __future__ import annotations
@@ -221,9 +221,6 @@ def standardize_comtrade(
     selected_partners: list | None = None,
     selected_reporters: list | None = None,
 ) -> pd.DataFrame:
-    """
-    Padroniza a base do UN Comtrade preservando a dimensão do PARTNER.
-    """
     d = df.copy()
     cols = {
         year_col: "ano",
@@ -264,9 +261,6 @@ def standardize_comtrade(
 
 @st.cache_data(show_spinner="Calculando RCA/RSCA por Partner...")
 def compute_comtrade_metrics(comtrade_tidy: pd.DataFrame, years: tuple) -> pd.DataFrame:
-    """
-    Calcula RCA e RSCA vetorizados para CADA PARTNER individualmente.
-    """
     years = tuple(sorted(set(int(y) for y in years)))
     df_filtered = comtrade_tidy[comtrade_tidy["ano"].isin(years)].copy()
     if df_filtered.empty:
@@ -362,7 +356,6 @@ def compute_state_diversification_potentials(
     if br_metrics.empty:
         return pd.DataFrame()
 
-    # Média do RCA entre os parceiros para vantagem nacional
     advantage = br_metrics.groupby(["sh6", "sh6_desc"], as_index=False).agg(
         rca=("rca_partner", "mean"),
         rsca=("rsca_partner", "mean"),
@@ -708,21 +701,47 @@ def page_comtrade_global():
             "partner": "Parceiro Comercial",
             "reporter": "País Declarante",
         },
-        height=400,
+        height=350,
     )
 
-    fig = px.scatter(
-        filtered_df, x="rca_partner", y="rsca_partner", color="partner", hover_name="sh6_desc",
-        title="Distribuição entre RCA e RSCA por Partner",
-        labels={"rca_partner": "RCA por Partner", "rsca_partner": "RSCA por Partner (-1 a +1)"},
-        template="plotly_white",
-    )
-    fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-    fig.add_hline(y=0, line_dash="dash", line_color=PASTEL_COLORS["red_main"], annotation_text="Ponto Neutro (RSCA = 0)")
-    st.plotly_chart(fig, use_container_width=True)
+    st.divider()
+
+    # --- GRÁFICOS SEPARADOS PARA RCA E RSCA ---
+    st.subheader("📈 Análise de Distribuição e Desempenho (RCA vs RSCA)")
+    
+    chart_col1, chart_col2 = st.columns(2)
+
+    with chart_col1:
+        st.markdown("#### **Índice RCA (Balassa)**")
+        fig_rca = px.histogram(
+            filtered_df, x="rca_partner", color="partner",
+            hover_data=["sh6_desc", "reporter"],
+            title="Distribuição das Vantagens Comparativas (RCA)",
+            labels={"rca_partner": "Índice RCA por Partner", "partner": "Parceiro"},
+            template="plotly_white",
+            nbins=30,
+        )
+        fig_rca.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+        fig_rca.add_vline(x=1.0, line_dash="dash", line_color=PASTEL_COLORS["blue_main"], annotation_text="Limiar de Vantagem (RCA = 1)")
+        st.plotly_chart(fig_rca, use_container_width=True)
+
+    with chart_col2:
+        st.markdown("#### **Índice RSCA (Laursen - Simétrico)**")
+        fig_rsca = px.box(
+            filtered_df, x="partner", y="rsca_partner", color="partner",
+            hover_data=["sh6_desc", "reporter"],
+            title="Amplitude do Índice RSCA Simétrico por Partner (-1 a +1)",
+            labels={"rsca_partner": "RSCA por Partner", "partner": "Parceiro"},
+            template="plotly_white",
+        )
+        fig_rsca.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", showlegend=False)
+        fig_rsca.add_hline(y=0, line_dash="dash", line_color=PASTEL_COLORS["red_main"], annotation_text="Ponto Neutro (RSCA = 0)")
+        st.plotly_chart(fig_rsca, use_container_width=True)
 
     if len(years_range) > 1:
-        st.subheader("📈 Evolução Temporal do RCA por Partner")
+        st.divider()
+        st.subheader("📉 Evolução Temporal Separada (RCA e RSCA)")
+        
         c1, c2, c3 = st.columns(3)
         with c1:
             trend_reporter = st.selectbox("País:", sorted(df_metrics["reporter"].unique()), key="trend_rep")
@@ -739,14 +758,31 @@ def page_comtrade_global():
         ].sort_values("ano")
 
         if not trend_df.empty:
-            fig_trend = px.line(
-                trend_df, x="ano", y=["rca_partner", "rsca_partner"], markers=True,
-                title=f"Evolução RCA/RSCA — {trend_reporter} x {trend_partner} — SH6 {trend_sh6}",
-                template="plotly_white",
-            )
-            fig_trend.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", legend_title_text="Índice")
-            fig_trend.add_hline(y=1.0, line_dash="dot", line_color=PASTEL_COLORS["blue_main"])
-            st.plotly_chart(fig_trend, use_container_width=True)
+            t_col1, t_col2 = st.columns(2)
+            
+            with t_col1:
+                fig_trend_rca = px.line(
+                    trend_df, x="ano", y="rca_partner", markers=True,
+                    title=f"Evolução do RCA — {trend_reporter} x {trend_partner} — SH6 {trend_sh6}",
+                    labels={"rca_partner": "Índice RCA", "ano": "Ano"},
+                    template="plotly_white",
+                )
+                fig_trend_rca.update_traces(line_color=PASTEL_COLORS["blue_main"])
+                fig_trend_rca.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+                fig_trend_rca.add_hline(y=1.0, line_dash="dot", line_color=PASTEL_COLORS["amber_main"], annotation_text="RCA = 1.0")
+                st.plotly_chart(fig_trend_rca, use_container_width=True)
+
+            with t_col2:
+                fig_trend_rsca = px.line(
+                    trend_df, x="ano", y="rsca_partner", markers=True,
+                    title=f"Evolução do RSCA — {trend_reporter} x {trend_partner} — SH6 {trend_sh6}",
+                    labels={"rsca_partner": "Índice RSCA", "ano": "Ano"},
+                    template="plotly_white",
+                )
+                fig_trend_rsca.update_traces(line_color=PASTEL_COLORS["green_main"])
+                fig_trend_rsca.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+                fig_trend_rsca.add_hline(y=0.0, line_dash="dot", line_color=PASTEL_COLORS["red_main"], annotation_text="RSCA = 0.0")
+                st.plotly_chart(fig_trend_rsca, use_container_width=True)
 
 
 # --- PÁGINA 2: CRUZAMENTO BRASIL COMEXSTAT X COMTRADE ---
@@ -852,15 +888,29 @@ def page_comexstat_cross():
             N_Produtos=("sh6_cod", "nunique"),
         ).reset_index().sort_values("Valor_FOB", ascending=False)
 
-        fig_sec = px.bar(
-            agg_sector.head(15), x="Valor_FOB", y=selected_col, orientation="h",
-            color="RSCA_Medio", color_continuous_scale=["#ef4444", "#f59e0b", "#10b981"],
-            title=f"Top 15 Setores por Valor Exportado ({group_opt}) e RSCA Médio",
-            labels={"Valor_FOB": "Valor FOB (US$)", selected_col: "Setor", "RSCA_Medio": "RSCA Médio"},
-            template="plotly_white",
-        )
-        fig_sec.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-        st.plotly_chart(fig_sec, use_container_width=True)
+        col_sec1, col_sec2 = st.columns(2)
+
+        with col_sec1:
+            fig_sec_rca = px.bar(
+                agg_sector.head(15), x="Valor_FOB", y=selected_col, orientation="h",
+                color="RCA_Medio", color_continuous_scale=["#3b82f6", "#10b981"],
+                title=f"Top 15 Setores por Valor e RCA Médio ({group_opt})",
+                labels={"Valor_FOB": "Valor FOB (US$)", selected_col: "Setor", "RCA_Medio": "RCA Médio"},
+                template="plotly_white",
+            )
+            fig_sec_rca.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig_sec_rca, use_container_width=True)
+
+        with col_sec2:
+            fig_sec_rsca = px.bar(
+                agg_sector.head(15), x="Valor_FOB", y=selected_col, orientation="h",
+                color="RSCA_Medio", color_continuous_scale=["#ef4444", "#f59e0b", "#10b981"],
+                title=f"Top 15 Setores por Valor e RSCA Médio ({group_opt})",
+                labels={"Valor_FOB": "Valor FOB (US$)", selected_col: "Setor", "RSCA_Medio": "RSCA Médio"},
+                template="plotly_white",
+            )
+            fig_sec_rsca.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig_sec_rsca, use_container_width=True)
 
         st.dataframe(
             agg_sector,
