@@ -2,7 +2,7 @@
 """
 ==============================================================================
  SISTEMA DE ANÁLISE DE DIVERSIFICAÇÃO DAS EXPORTAÇÕES BRASILEIRAS
- (Glassmorfismo Cupertino) — v8.0 (Lógica de Importação UN Comtrade)
+ (Glassmorfismo Cupertino) — v9.0 (Filtro valor > 0 & Scatter Plot RCA Geral)
 ==============================================================================
 """
 
@@ -208,7 +208,7 @@ def standardize_comexstat(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ==============================================================================
-# 3. PADRONIZAÇÃO COMTRADE (LÓGICA DE IMPORTAÇÃO)
+# 3. PADRONIZAÇÃO COMTRADE (LOGICA DE IMPORTAÇÃO)
 # ==============================================================================
 
 def standardize_comtrade(
@@ -226,7 +226,7 @@ def standardize_comtrade(
     cols = {
         year_col: "ano",
         reporter_col: "reporter", # País Imprtador / Declarante
-        partner_col: "partner",   # País Exportador / Parceiro
+        partner_col: "partner",   # País Exportador / Fornecedor
         sh6_col: "sh6",
         value_col: "valor",
     }
@@ -289,7 +289,6 @@ def compute_comtrade_dual_metrics(comtrade_tidy: pd.DataFrame, years: tuple) -> 
         rep_raw = df_filtered
 
     # --- CAMADA 1: CONSOLIDAÇÃO GLOBAL POR FORNECEDOR (PARTNER) E SH6 (1 LINHA POR PRODUTO) ---
-    # Somamos quanto todos os países importadores (Reporters) compraram de cada fornecedor (Partner) para o produto k
     prt_sh6_global = rep_raw.groupby(["partner", "sh6", "sh6_desc"], as_index=False)["valor"].sum()
     
     # Demanda Global do produto k (Soma de todas as importações do mundo)
@@ -359,14 +358,11 @@ def compute_comtrade_dual_metrics(comtrade_tidy: pd.DataFrame, years: tuple) -> 
     # --- CAMADA 2: ANÁLISE BILATERAL POR PAÍS COMPRADOR (REPORTER) x FORNECEDOR (PARTNER) x SH6 ---
     rep_sh6_prt = rep_raw.groupby(["reporter", "partner", "sh6", "sh6_desc"], as_index=False)["valor"].sum()
     
-    # Quanto o País Imprtador (Reporter) comprou do Fornecedor (Partner) no produto SH6
     pv_rep_b = rep_sh6_prt.pivot_table(index=["sh6", "reporter"], columns="partner", values="valor", aggfunc="sum", fill_value=0.0)
-    tot_imp_prt = pv_rep_b.sum(axis=0) # Importação total de cada fornecedor do ponto de vista das declarações
+    tot_imp_prt = pv_rep_b.sum(axis=0)
 
-    # Share da pauta do fornecedor no país comprador específico
     share_imp_pais = pv_rep_b.div(tot_imp_prt.replace(0, np.nan), axis=1).fillna(0.0)
     
-    # Importação total do país comprador para aquele produto k
     tot_imp_reporter = rep_sh6_prt.groupby("reporter")["valor"].sum()
     val_rep_sh6 = rep_sh6_prt.groupby(["sh6", "reporter"])["valor"].sum()
     share_imp_world = val_rep_sh6.div(val_rep_sh6.index.get_level_values("reporter").map(tot_imp_reporter), axis=0).fillna(0.0)
@@ -722,10 +718,11 @@ def page_comtrade_global():
 
     target_partner = st.selectbox("Selecione o País Fornecedor Analisado (Partner):", partners_disponiveis, index=default_prt_idx)
 
-    df_g_prt = df_global[df_global["partner"] == target_partner].copy()
-    df_b_prt = df_bilateral[df_bilateral["partner"] == target_partner].copy() if not df_bilateral.empty else pd.DataFrame()
+    # Filtrar dados do Partner Alvo e RESTRINGIR APENAS A REGISTROS COM VALOR > 0
+    df_g_prt = df_global[(df_global["partner"] == target_partner) & (df_global["valor"] > 0)].copy()
+    df_b_prt = df_bilateral[(df_bilateral["partner"] == target_partner) & (df_bilateral["valor"] > 0)].copy() if not df_bilateral.empty else pd.DataFrame()
 
-    # --- CÁLCULO DAS MÉTRICAS EXECUTIVAS DA BASE DE IMPORTAÇÃO ---
+    # --- CÁLCULO DAS MÉTRICAS EXECUTIVAS DA BASE DE IMPORTAÇÃO (VALOR > 0) ---
     total_sh6_pauta = df_g_prt["sh6"].nunique()
     sh6_com_vantagem = df_g_prt[df_g_prt["rca_global"] >= 1.0]["sh6"].nunique()
     
@@ -743,19 +740,19 @@ def page_comtrade_global():
     <div class="metric-grid">
         <div class="metric-card" style="background: rgba(236, 253, 245, 0.85); border-color: rgba(16, 185, 129, 0.35);">
             <div class="m-value" style="color: #059669;">{sh6_com_vantagem:,}</div>
-            <div class="m-label">Produtos com RCA Global ≥ 1.0</div>
+            <div class="m-label">Produtos com RCA Global ≥ 1.0 (Valor > 0)</div>
         </div>
         <div class="metric-card" style="background: rgba(239, 246, 255, 0.85); border-color: rgba(59, 130, 246, 0.35);">
             <div class="m-value" style="color: #2563eb;">{total_sh6_pauta:,}</div>
-            <div class="m-label">Total Produtos Comercializados (SH6)</div>
+            <div class="m-label">Total Produtos Efetivamente Comercializados (Valor > 0)</div>
         </div>
         <div class="metric-card" style="background: rgba(245, 243, 255, 0.85); border-color: rgba(139, 92, 246, 0.35);">
             <div class="m-value" style="color: #7c3aed;">{paises_com_vantagem:,}</div>
-            <div class="m-label">Países Compradores com RCA ≥ 1.0</div>
+            <div class="m-label">Países Compradores com RCA ≥ 1.0 (Valor > 0)</div>
         </div>
         <div class="metric-card" style="background: rgba(254, 243, 199, 0.85); border-color: rgba(245, 158, 11, 0.35);">
             <div class="m-value" style="color: #d97706;">{total_paises_compradores:,}</div>
-            <div class="m-label">Total de Países Compradores</div>
+            <div class="m-label">Total de Países Compradores Efetivos (Valor > 0)</div>
         </div>
         <div class="metric-card" style="background: rgba(243, 244, 246, 0.85); border-color: rgba(156, 163, 175, 0.35);">
             <div class="m-value" style="color: #4b5563;">{format_num(media_rsca_g, 2)}</div>
@@ -775,7 +772,7 @@ def page_comtrade_global():
 
     with tab_g:
         st.subheader(f"📌 Tabela Consolidada Global — {target_partner} no Mundo")
-        st.caption(f"1 linha por código SH6. Exatamente {total_sh6_pauta:,} produtos comercializados consolidados.")
+        st.caption(f"1 linha por código SH6. Exatamente {total_sh6_pauta:,} produtos comercializados com valor importado > 0.")
 
         st.dataframe(
             df_g_prt,
@@ -794,25 +791,50 @@ def page_comtrade_global():
             height=380,
         )
 
-        st.markdown("#### **Matriz Trimétrica Consolidada: RSCA vs Dinamismo Importador Mundial**")
-        fig_matrix = px.scatter(
+        st.markdown("---")
+        st.subheader("📈 Gráfico de Dispersão do RCA Geral Consolidado (Sem Divisão por País)")
+        st.caption("Mapeamento do nível de Vantagem Comparativa Revelada (RCA/RSCA) x Market Share / Dinamismo Global dos produtos da pauta do fornecedor.")
+
+        axis_y_opt = st.radio(
+            "Selecione o Eixo Y para Análise do RCA Geral:",
+            ["Market Share Global (%)", "Dinamismo Importador Mundial (%)"],
+            horizontal=True
+        )
+
+        y_col_name = "market_share_pct" if axis_y_opt == "Market Share Global (%)" else "crescimento_mundo_pct"
+
+        fig_scatter_rca = px.scatter(
             df_g_prt,
             x="rsca_global",
-            y="crescimento_mundo_pct",
+            y=y_col_name,
+            size="valor",
             color="posicao_estrategica",
-            size="market_share_pct",
-            hover_data=["sh6", "sh6_desc"],
-            labels={"rsca_global": "RSCA Global", "crescimento_mundo_pct": "Dinamismo Mundial (%)"},
+            hover_name="sh6_desc",
+            hover_data={
+                "sh6": True,
+                "rca_global": ":.2f",
+                "rsca_global": ":.2f",
+                "valor": ":$,.0f",
+                "market_share_pct": ":.2f%",
+                "crescimento_mundo_pct": ":.2f%",
+            },
+            labels={
+                "rsca_global": "RSCA Global (Vantagem Comparativa Simétrica)",
+                "market_share_pct": "Market Share Global (%)",
+                "crescimento_mundo_pct": "Dinamismo Importador Mundial (%)",
+                "valor": "Valor Importado (US$)",
+                "posicao_estrategica": "Posição Estratégica"
+            },
+            title=f"Dispersão do RCA Geral: RSCA Global vs {axis_y_opt}",
             template="plotly_white",
         )
-        fig_matrix.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-        fig_matrix.add_vline(x=0.0, line_dash="dash", line_color="#9ca3af")
-        fig_matrix.add_hline(y=0.0, line_dash="dash", line_color="#9ca3af")
-        st.plotly_chart(fig_matrix, width="stretch")
+        fig_scatter_rca.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+        fig_scatter_rca.add_vline(x=0.0, line_dash="dash", line_color="#ef4444", annotation_text="RCA = 1.0 (Limiar de Vantagem)", annotation_position="top left")
+        st.plotly_chart(fig_scatter_rca, width="stretch")
 
     with tab_b:
         st.subheader(f"📌 Tabela Bilateral por País Comprador — Compras de {target_partner}")
-        st.caption("Análise desagregada de quais países compram determinado produto e o valor comprado.")
+        st.caption("Análise desagregada de quais países compram determinado produto e o valor comprado (apenas transações > US$ 0).")
 
         if not df_b_prt.empty:
             reps_filter = st.multiselect("Filtrar por País Comprador (Reporter):", sorted(df_b_prt["reporter"].unique()))
@@ -832,7 +854,7 @@ def page_comtrade_global():
                 height=380,
             )
         else:
-            st.info("Não há registros bilaterais disponíveis para o filtro atual.")
+            st.info("Não há registros bilaterais com valor > 0 para o filtro atual.")
 
 
 # --- PÁGINA 2: CRUZAMENTO BRASIL COMEXSTAT X COMTRADE ---
