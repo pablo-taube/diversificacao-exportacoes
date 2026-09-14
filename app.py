@@ -2,7 +2,7 @@
 """
 ==============================================================================
  SISTEMA DE ANÁLISE DE DIVERSIFICAÇÃO DAS EXPORTAÇÕES BRASILEIRAS
- (Glassmorfismo Cupertino) — v4.2 (Cartões Pastel de Métricas)
+ (Glassmorfismo Cupertino) — v5.0 (RCA & RSCA Consolidados por SH6)
 ==============================================================================
 """
 
@@ -257,78 +257,74 @@ def standardize_comtrade(
 
 
 # ==============================================================================
-# 4. MOTOR DE CÁLCULO DE MÉTRICAS BILATERAIS (RCA E RSCA POR PARTNER)
+# 4. MOTOR DE CÁLCULO DE MÉTRICAS GLOBAIS CONSOLIDADAS (RCA E RSCA POR SH6)
 # ==============================================================================
 
-@st.cache_data(show_spinner="Calculando RCA/RSCA por Partner...")
+@st.cache_data(show_spinner="Calculando RCA/RSCA Globais por SH6...")
 def compute_comtrade_metrics(comtrade_tidy: pd.DataFrame, years: tuple) -> pd.DataFrame:
+    """Calcula o RCA e RSCA consolidados por produto (SH6) e país declarante (Reporter),
+
+    agregando todos os fluxos mundiais antes de aplicar o Índice de Balassa.
+    """
     years = tuple(sorted(set(int(y) for y in years)))
     df_filtered = comtrade_tidy[comtrade_tidy["ano"].isin(years)].copy()
     if df_filtered.empty:
-        return pd.DataFrame(columns=["ano", "reporter", "partner", "sh6", "sh6_desc", "valor", "mundo_valor", "rca_partner", "rsca_partner"])
+        return pd.DataFrame(columns=["ano", "reporter", "sh6", "sh6_desc", "valor", "mundo_valor", "rca", "rsca"])
 
-    year_partner_frames = []
+    year_frames = []
 
     for yr in years:
         df_yr = df_filtered[df_filtered["ano"] == yr]
         if df_yr.empty:
             continue
 
-        partners = df_yr["partner"].unique()
+        # Consolidação global por Reporter e SH6 (soma de todos os parceiros)
+        rep_sh6 = df_yr.groupby(["reporter", "sh6", "sh6_desc"], as_index=False)["valor"].sum()
 
-        for prt in partners:
-            df_prt = df_yr[df_yr["partner"] == prt]
-            if df_prt.empty:
-                continue
+        reporters = rep_sh6["reporter"].unique()
+        world_reporter = detect_world_label(reporters)
 
-            pv = df_prt.pivot_table(index="sh6", columns="reporter", values="valor", aggfunc="sum", fill_value=0.0)
-            sh6_descs = df_prt.groupby("sh6")["sh6_desc"].first()
+        if world_reporter:
+            world_df = rep_sh6[rep_sh6["reporter"] == world_reporter].groupby("sh6")["valor"].sum()
+            rep_df = rep_sh6[rep_sh6["reporter"] != world_reporter].copy()
+        else:
+            world_df = rep_sh6.groupby("sh6")["valor"].sum()
+            rep_df = rep_sh6.copy()
 
-            world_reporter = detect_world_label(pv.columns.tolist())
-            uses_world_ref = world_reporter is not None and world_reporter in pv.columns
+        X_w = float(world_df.sum())
 
-            if uses_world_ref:
-                X_wj = pv[world_reporter]
-                X_w = float(X_wj.sum())
-                reporters = [r for r in pv.columns if r != world_reporter]
-            else:
-                X_wj = pv.sum(axis=1)
-                X_w = float(pv.values.sum())
-                reporters = list(pv.columns)
+        if X_w == 0 or rep_df.empty:
+            continue
 
-            if not reporters:
-                continue
+        pv_rep = rep_df.pivot_table(index="sh6", columns="reporter", values="valor", aggfunc="sum", fill_value=0.0)
+        X_i = pv_rep.sum(axis=0)
 
-            pv_r = pv[reporters]
-            X_i = pv_r.sum(axis=0)
+        share_pais = pv_rep.div(X_i.replace(0, np.nan), axis=1).fillna(0.0)
+        share_mundo = (world_df / X_w) if X_w > 0 else pd.Series(0.0, index=pv_rep.index)
+        share_mundo = share_mundo.reindex(pv_rep.index).fillna(0.0)
 
-            share_pais = pv_r.div(X_i.replace(0, np.nan), axis=1).fillna(0.0)
-            share_mundo = (X_wj / X_w) if X_w > 0 else pd.Series(0.0, index=X_wj.index)
+        rca_df = share_pais.div(share_mundo.replace(0, np.nan), axis=0)
+        rca_df = rca_df.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        rsca_df = ((rca_df - 1) / (rca_df + 1)).fillna(-1.0)
 
-            rca_df = share_pais.div(share_mundo.replace(0, np.nan), axis=0)
-            rca_df = rca_df.replace([np.inf, -np.inf], np.nan).fillna(0.0)
-            rsca_df = ((rca_df - 1) / (rca_df + 1)).fillna(-1.0)
+        val_long = pv_rep.stack().rename("valor").reset_index()
+        rca_long = rca_df.stack().rename("rca").reset_index()
+        rsca_long = rsca_df.stack().rename("rsca").reset_index()
 
-            val_long = pv_r.stack().rename("valor").reset_index()
-            val_long.columns = ["sh6", "reporter", "valor"]
-            rca_long = rca_df.stack().rename("rca_partner").reset_index()
-            rca_long.columns = ["sh6", "reporter", "rca_partner"]
-            rsca_long = rsca_df.stack().rename("rsca_partner").reset_index()
-            rsca_long.columns = ["sh6", "reporter", "rsca_partner"]
+        merged = val_long.merge(rca_long, on=["sh6", "reporter"]).merge(rsca_long, on=["sh6", "reporter"])
+        merged["ano"] = yr
 
-            merged = val_long.merge(rca_long, on=["sh6", "reporter"]).merge(rsca_long, on=["sh6", "reporter"])
-            merged["ano"] = yr
-            merged["partner"] = prt
-            merged["sh6_desc"] = merged["sh6"].map(sh6_descs)
-            merged["mundo_valor"] = merged["sh6"].map(X_wj)
+        sh6_descs = rep_sh6.groupby("sh6")["sh6_desc"].first()
+        merged["sh6_desc"] = merged["sh6"].map(sh6_descs)
+        merged["mundo_valor"] = merged["sh6"].map(world_df).fillna(0.0)
 
-            year_partner_frames.append(merged)
+        year_frames.append(merged)
 
-    if not year_partner_frames:
-        return pd.DataFrame(columns=["ano", "reporter", "partner", "sh6", "sh6_desc", "valor", "mundo_valor", "rca_partner", "rsca_partner"])
+    if not year_frames:
+        return pd.DataFrame(columns=["ano", "reporter", "sh6", "sh6_desc", "valor", "mundo_valor", "rca", "rsca"])
 
-    out = pd.concat(year_partner_frames, ignore_index=True)
-    return out[["ano", "reporter", "partner", "sh6", "sh6_desc", "valor", "mundo_valor", "rca_partner", "rsca_partner"]]
+    out = pd.concat(year_frames, ignore_index=True)
+    return out[["ano", "reporter", "sh6", "sh6_desc", "valor", "mundo_valor", "rca", "rsca"]]
 
 
 def compute_state_diversification_potentials(
@@ -357,11 +353,7 @@ def compute_state_diversification_potentials(
     if br_metrics.empty:
         return pd.DataFrame()
 
-    advantage = br_metrics.groupby(["sh6", "sh6_desc"], as_index=False).agg(
-        rca=("rca_partner", "mean"),
-        rsca=("rsca_partner", "mean"),
-        mundo_valor=("mundo_valor", "sum")
-    )
+    advantage = br_metrics[["sh6", "sh6_desc", "rca", "rsca", "mundo_valor"]].copy()
     advantage = advantage[advantage["rca"] >= 1.0].copy()
 
     if advantage.empty:
@@ -429,7 +421,6 @@ def inject_custom_css():
             border-right: 1px solid rgba(255, 255, 255, 0.7) !important;
         }
 
-        /* Grid para Cartões Pastel de Métricas Superior */
         .metric-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -634,10 +625,10 @@ if "raw_comtrade" in st.session_state:
 # 7. MÓDULOS DA APLICAÇÃO
 # ==============================================================================
 
-# --- PÁGINA 1: UN COMTRADE RCA / RSCA ---
+# --- PÁGINA 1: UN COMTRADE RCA / RSCA GLOBAL ---
 def page_comtrade_global():
-    st.title("📊 Análise de RCA e RSCA por Partner (UN Comtrade)")
-    st.caption("Cálculo de Vantagem Comparativa Revelada (Balassa) e Simétrica (Laursen) calculada individualmente por Parceiro Comercial.")
+    st.title("📊 Análise de RCA e RSCA Global (UN Comtrade)")
+    st.caption("Cálculo de Vantagem Comparativa Revelada (Balassa) e Simétrica (Laursen) consolidados globalmente por produto (SH6).")
 
     if "comtrade_tidy" not in st.session_state:
         st.info("👈 Por favor, carregue e processe o arquivo do UN Comtrade na barra lateral.")
@@ -662,43 +653,39 @@ def page_comtrade_global():
         st.warning("Não há dados suficientes para o intervalo de anos selecionado.")
         return
 
-    f_col1, f_col2, f_col3, f_col4 = st.columns(4)
+    f_col1, f_col2, f_col3 = st.columns(3)
     with f_col1:
         reps = st.multiselect("Filtrar por Reporter (País):", sorted(df_metrics["reporter"].unique()))
     with f_col2:
-        prts = st.multiselect("Filtrar por Partner (Parceiro):", sorted(df_metrics["partner"].unique()))
-    with f_col3:
         sh6s = st.multiselect("Filtrar por SH6:", sorted(df_metrics["sh6"].unique()))
-    with f_col4:
-        only_advantage = st.checkbox("Apenas com RCA por Partner >= 1")
+    with f_col3:
+        only_advantage = st.checkbox("Apenas com RCA ≥ 1")
 
     filtered_df = df_metrics.copy()
     if reps:
         filtered_df = filtered_df[filtered_df["reporter"].isin(reps)]
-    if prts:
-        filtered_df = filtered_df[filtered_df["partner"].isin(prts)]
     if sh6s:
         filtered_df = filtered_df[filtered_df["sh6"].isin(sh6s)]
     if only_advantage:
-        filtered_df = filtered_df[filtered_df["rca_partner"] >= 1.0]
+        filtered_df = filtered_df[filtered_df["rca"] >= 1.0]
 
-    # --- CÁLCULO DAS 5 MÉTRICAS PRINCIPAIS ---
-    media_rca = filtered_df["rca_partner"].mean() if not filtered_df.empty else 0.0
-    media_rsca = filtered_df["rsca_partner"].mean() if not filtered_df.empty else 0.0
-    sh6_gt_1 = filtered_df[filtered_df["rca_partner"] > 1.0]["sh6"].nunique() if not filtered_df.empty else 0
-    sh6_lt_1 = filtered_df[filtered_df["rca_partner"] < 1.0]["sh6"].nunique() if not filtered_df.empty else 0
-    paises_rca_gt_1 = filtered_df[filtered_df["rca_partner"] > 1.0]["partner"].nunique() if not filtered_df.empty else 0
+    # --- MÉTRICAS CONSOLIDADAS POR PRODUTO SH6 ---
+    media_rca = filtered_df["rca"].mean() if not filtered_df.empty else 0.0
+    media_rsca = filtered_df["rsca"].mean() if not filtered_df.empty else 0.0
+    sh6_gt_1 = (filtered_df["rca"] > 1.0).sum() if not filtered_df.empty else 0
+    sh6_lt_1 = (filtered_df["rca"] < 1.0).sum() if not filtered_df.empty else 0
+    paises_analisados = filtered_df["reporter"].nunique() if not filtered_df.empty else 0
 
-    # --- RENDERIZAÇÃO DOS CARTÕES EM TONS PASTEIS ---
+    # --- CARTÕES EM TONS PASTEIS ---
     html_stats = f"""
     <div class="metric-grid">
         <div class="metric-card" style="background: rgba(239, 246, 255, 0.85); border-color: rgba(59, 130, 246, 0.35);">
             <div class="m-value" style="color: #2563eb;">{format_num(media_rca, 2)}</div>
-            <div class="m-label">Média RCA por Partner</div>
+            <div class="m-label">Média RCA Global</div>
         </div>
         <div class="metric-card" style="background: rgba(236, 253, 245, 0.85); border-color: rgba(16, 185, 129, 0.35);">
             <div class="m-value" style="color: #059669;">{format_num(media_rsca, 2)}</div>
-            <div class="m-label">Média RSCA por Partner</div>
+            <div class="m-label">Média RSCA Global</div>
         </div>
         <div class="metric-card" style="background: rgba(240, 253, 244, 0.85); border-color: rgba(34, 197, 94, 0.35);">
             <div class="m-value" style="color: #16a34a;">{sh6_gt_1:,}</div>
@@ -709,49 +696,50 @@ def page_comtrade_global():
             <div class="m-label">Produtos SH6 (RCA < 1)</div>
         </div>
         <div class="metric-card" style="background: rgba(245, 243, 255, 0.85); border-color: rgba(139, 92, 246, 0.35);">
-            <div class="m-value" style="color: #7c3aed;">{paises_rca_gt_1:,}</div>
-            <div class="m-label">Países Únicos (RCA > 1)</div>
+            <div class="m-value" style="color: #7c3aed;">{paises_analisados:,}</div>
+            <div class="m-label">Países Analisados</div>
         </div>
     </div>
     """
     st.markdown(html_stats, unsafe_allow_html=True)
 
-    st.subheader("Resultados Detalhados por Partner")
+    st.subheader("Resultados Detalhados por Produto (SH6)")
 
     st.dataframe(
         filtered_df,
         column_config={
-            "valor": st.column_config.NumberColumn("Valor (US$)", format="$ %,.2f"),
+            "valor": st.column_config.NumberColumn("Valor Exportado (US$)", format="$ %,.2f"),
             "mundo_valor": st.column_config.NumberColumn("Mundo Valor (US$)", format="$ %,.2f"),
-            "rca_partner": st.column_config.NumberColumn("RCA por Partner", format="%.4f"),
-            "rsca_partner": st.column_config.NumberColumn("RSCA por Partner", format="%.4f"),
+            "rca": st.column_config.NumberColumn("RCA Global", format="%.4f"),
+            "rsca": st.column_config.NumberColumn("RSCA Global", format="%.4f"),
             "ano": st.column_config.NumberColumn("Ano", format="%d"),
-            "partner": "Parceiro Comercial",
             "reporter": "País Declarante",
+            "sh6": "Código SH6",
+            "sh6_desc": "Descrição SH6",
         },
         height=350,
     )
 
     st.divider()
 
-    # --- GRÁFICOS SEPARADOS PARA RCA E RSCA (AMBOS EM DISPERSÃO) ---
-    st.subheader("📈 Análise de Dispersão e Desempenho (RCA vs RSCA)")
+    # --- GRÁFICOS DE DISPERSÃO PARA RCA E RSCA GLOBAIS ---
+    st.subheader("📈 Análise de Dispersão e Desempenho (RCA vs RSCA Global)")
 
     chart_col1, chart_col2 = st.columns(2)
 
     with chart_col1:
-        st.markdown("#### **Dispersão do Índice RCA (Balassa)**")
+        st.markdown("#### **Dispersão do Índice RCA Global (Balassa)**")
         fig_rca = px.scatter(
             filtered_df,
             x="valor",
-            y="rca_partner",
-            color="partner",
-            hover_data=["sh6", "sh6_desc", "reporter"],
-            title="Dispersão do RCA por Valor Exportado",
+            y="rca",
+            color="reporter",
+            hover_data=["sh6", "sh6_desc"],
+            title="Dispersão do RCA Global por Valor Exportado",
             labels={
                 "valor": "Valor Exportado (US$)",
-                "rca_partner": "Índice RCA por Partner",
-                "partner": "Parceiro",
+                "rca": "Índice RCA Global",
+                "reporter": "País",
             },
             template="plotly_white",
         )
@@ -765,18 +753,18 @@ def page_comtrade_global():
         st.plotly_chart(fig_rca, width="stretch")
 
     with chart_col2:
-        st.markdown("#### **Dispersão do Índice RSCA (Laursen - Simétrico)**")
+        st.markdown("#### **Dispersão do Índice RSCA Global (Laursen - Simétrico)**")
         fig_rsca = px.scatter(
             filtered_df,
             x="valor",
-            y="rsca_partner",
-            color="partner",
-            hover_data=["sh6", "sh6_desc", "reporter"],
-            title="Dispersão do RSCA por Valor Exportado (-1 a +1)",
+            y="rsca",
+            color="reporter",
+            hover_data=["sh6", "sh6_desc"],
+            title="Dispersão do RSCA Global por Valor Exportado (-1 a +1)",
             labels={
                 "valor": "Valor Exportado (US$)",
-                "rsca_partner": "RSCA por Partner",
-                "partner": "Parceiro",
+                "rsca": "RSCA Global",
+                "reporter": "País",
             },
             template="plotly_white",
         )
@@ -791,29 +779,17 @@ def page_comtrade_global():
 
     if len(years_range) > 1:
         st.divider()
-        st.subheader("📉 Evolução Temporal Separada (RCA e RSCA)")
+        st.subheader("📉 Evolução Temporal Separada (RCA e RSCA Global)")
 
-        c1, c2, c3 = st.columns(3)
+        c1, c2 = st.columns(2)
         with c1:
             trend_reporter = st.selectbox("País:", sorted(df_metrics["reporter"].unique()), key="trend_rep")
+        opts_sh6 = sorted(df_metrics[df_metrics["reporter"] == trend_reporter]["sh6"].unique())
         with c2:
-            trend_partner = st.selectbox(
-                "Parceiro:",
-                sorted(df_metrics[df_metrics["reporter"] == trend_reporter]["partner"].unique()),
-                key="trend_prt",
-            )
-        opts_sh6 = sorted(
-            df_metrics[
-                (df_metrics["reporter"] == trend_reporter) & (df_metrics["partner"] == trend_partner)
-            ]["sh6"].unique()
-        )
-        with c3:
             trend_sh6 = st.selectbox("Produto (SH6):", opts_sh6, key="trend_sh6")
 
         trend_df = df_metrics[
-            (df_metrics["reporter"] == trend_reporter)
-            & (df_metrics["partner"] == trend_partner)
-            & (df_metrics["sh6"] == trend_sh6)
+            (df_metrics["reporter"] == trend_reporter) & (df_metrics["sh6"] == trend_sh6)
         ].sort_values("ano")
 
         if not trend_df.empty:
@@ -823,10 +799,10 @@ def page_comtrade_global():
                 fig_trend_rca = px.line(
                     trend_df,
                     x="ano",
-                    y="rca_partner",
+                    y="rca",
                     markers=True,
-                    title=f"Evolução do RCA — {trend_reporter} x {trend_partner} — SH6 {trend_sh6}",
-                    labels={"rca_partner": "Índice RCA", "ano": "Ano"},
+                    title=f"Evolução do RCA Global — {trend_reporter} — SH6 {trend_sh6}",
+                    labels={"rca": "Índice RCA", "ano": "Ano"},
                     template="plotly_white",
                 )
                 fig_trend_rca.update_traces(line_color=PASTEL_COLORS["blue_main"])
@@ -843,10 +819,10 @@ def page_comtrade_global():
                 fig_trend_rsca = px.line(
                     trend_df,
                     x="ano",
-                    y="rsca_partner",
+                    y="rsca",
                     markers=True,
-                    title=f"Evolução do RSCA — {trend_reporter} x {trend_partner} — SH6 {trend_sh6}",
-                    labels={"rsca_partner": "Índice RSCA", "ano": "Ano"},
+                    title=f"Evolução do RSCA Global — {trend_reporter} — SH6 {trend_sh6}",
+                    labels={"rsca": "Índice RSCA", "ano": "Ano"},
                     template="plotly_white",
                 )
                 fig_trend_rsca.update_traces(line_color=PASTEL_COLORS["green_main"])
@@ -863,7 +839,7 @@ def page_comtrade_global():
 # --- PÁGINA 2: CRUZAMENTO BRASIL COMEXSTAT X COMTRADE ---
 def page_comexstat_cross():
     st.title("🇧🇷 Cruzamento das Exportações do Brasil com Competitividade Global")
-    st.caption("Cruzamento entre a pauta detalhada do ComexStat e os índices globais de RCA/RSCA por parceiro comercial.")
+    st.caption("Cruzamento entre a pauta detalhada do ComexStat e os índices globais de RCA/RSCA.")
 
     if "comexstat" not in st.session_state or "comtrade_tidy" not in st.session_state:
         st.warning("⚠️ É necessário carregar AMBOS os arquivos (ComexStat Brasil e UN Comtrade) na barra lateral.")
@@ -892,16 +868,7 @@ def page_comexstat_cross():
         st.error("Não foi encontrado um reporter 'Brazil'/'Brasil' nos dados do Comtrade processados.")
         return
 
-    br_ct = (
-        ct_metrics[ct_metrics["reporter"] == brazil_rep]
-        .groupby(["sh6"])
-        .agg(
-            rca=("rca_partner", "mean"),
-            rsca=("rsca_partner", "mean"),
-            mundo_valor=("mundo_valor", "sum"),
-        )
-        .reset_index()
-    )
+    br_ct = ct_metrics[ct_metrics["reporter"] == brazil_rep][["sh6", "rca", "rsca", "mundo_valor"]].copy()
 
     merged = pd.merge(
         cs[cs["ano"] == selected_year],
@@ -969,7 +936,7 @@ def page_comexstat_cross():
         </div>
         <div class="stat-item">
             <div class="stat-value" style="color:{PASTEL_COLORS['green_main']};">{produtos_vantagem:,}</div>
-            <div class="stat-label">Produtos com RCA Médio ≥ 1</div>
+            <div class="stat-label">Produtos com RCA Global ≥ 1</div>
         </div>
     </div>
     """
