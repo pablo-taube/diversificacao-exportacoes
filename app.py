@@ -2,7 +2,7 @@
 """
 ==============================================================================
  SISTEMA DE ANÁLISE DE DIVERSIFICAÇÃO DAS EXPORTAÇÕES BRASILEIRAS
- (Cupertino Executive Edition) — Fixed Upload UI & Scatter Plots
+ (Cupertino Executive Edition) — Refactored Production Code
 ==============================================================================
 """
 from __future__ import annotations
@@ -378,7 +378,7 @@ def compute_state_diversification_potentials(
 
 
 # ==============================================================================
-# 4. DESIGN EXEC & STYLES (CLEAN CUPERTINO)
+# 4. DESIGN EXEC & STYLES (CUPERTINO THEME)
 # ==============================================================================
 
 def inject_custom_css():
@@ -391,9 +391,15 @@ def inject_custom_css():
             --bg: #f8fafc;
             --card: #ffffff;
             --border: #e2e8f0;
+            --border-hover: #cbd5e1;
             --text-primary: #0f172a;
             --text-secondary: #475569;
+            --blue: #2563eb;
+            --green: #10b981;
+            --red: #ef4444;
+            --amber: #f59e0b;
             --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+            --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
         }
 
         html, body, [class*="st-"] {
@@ -488,7 +494,7 @@ def inject_custom_css():
         .badge-amber { background: #fffbeb; color: #b45309; }
         .badge-red   { background: #fef2f2; color: #b91c1c; }
 
-        /* Container Cards */
+        /* Streamlit Element Overrides */
         [data-testid="stVerticalBlockBorderWrapper"] {
             background: #ffffff !important;
             border: 1px solid var(--border) !important;
@@ -497,12 +503,19 @@ def inject_custom_css():
             padding: 1rem !important;
         }
 
+        .stButton>button {
+            border-radius: 8px !important;
+            font-weight: 600 !important;
+            transition: all 0.2s ease !important;
+        }
+
         [data-testid="stDataFrame"] {
             border: 1px solid var(--border);
             border-radius: 12px;
             box-shadow: var(--shadow-sm);
         }
 
+        /* Checkbox vertical align helper */
         .checkbox-fix {
             margin-top: 1.8rem;
         }
@@ -635,6 +648,7 @@ def page_comtrade_global():
         st.error("Nenhum ano válido encontrado nos dados.")
         return
 
+    # Painel de Filtros Integrado
     with st.container(border=True):
         st.markdown("**🔍 Filtros da Análise**")
         c1, c2, c3, c4 = st.columns([1, 1, 1.5, 1.5])
@@ -653,7 +667,7 @@ def page_comtrade_global():
         with c3:
             reps = st.multiselect("Declarante (Reporter)", sorted(df_metrics["reporter"].unique()))
         with c4:
-            prts = st.multiselect("Partner (Parceiro)", sorted(df_metrics["partner"].unique()))
+            prts = st.multiselect("Parceiro (Partner)", sorted(df_metrics["partner"].unique()))
 
         c5, c6 = st.columns([3, 1])
         with c5:
@@ -706,6 +720,7 @@ def page_comtrade_global():
 
     st.markdown("---")
     
+    # Tabela com Títulos Dinâmicos
     partner_title = prts[0] if len(prts) == 1 else "Parceiro Selecionado"
     rca_col_name = f"RCA ({partner_title})"
     rsca_col_name = f"RSCA ({partner_title})"
@@ -728,6 +743,7 @@ def page_comtrade_global():
         height=350,
     )
 
+    # Visualizações Gráficas
     st.subheader("📈 Distribuições e Desempenho")
     g1, g2 = st.columns(2)
 
@@ -756,7 +772,7 @@ def page_comtrade_global():
         st.plotly_chart(fig_rsca, use_container_width=True)
 
 
-# --- MÓDULO 2: CRUZAMENTO COMEXSTAT X COMTRADE (SCATTER PLOTS) ---
+# --- MÓDULO 2: CRUZAMENTO COMEXSTAT X COMTRADE ---
 def page_comexstat_cross():
     st.title("🇧🇷 Cruzamento Pauta Brasil x Competitividade Global")
     st.caption("Pauta nacional ComexStat alinhada às vantagens globais calculadas via Comtrade")
@@ -812,6 +828,7 @@ def page_comexstat_cross():
     if f_cgce1 and "cgce1_desc" in df_f.columns: df_f = df_f[df_f["cgce1_desc"].isin(f_cgce1)]
     if f_cgce2 and "cgce2_desc" in df_f.columns: df_f = df_f[df_f["cgce2_desc"].isin(f_cgce2)]
 
+    # Metrics Layout Unificado
     m1, m2, m3, m4 = st.columns(4)
     with m1:
         st.markdown(
@@ -858,6 +875,7 @@ def page_comexstat_cross():
 
     st.markdown("---")
 
+    # Visualização por Agrupamento Setorial
     group_opt = st.selectbox("Agrupar Visualização por:", ["CUCI Grupo", "ISIC Divisão", "ISIC Seção", "CGCE Nível 1", "CGCE Nível 2"])
     col_map = {
         "CUCI Grupo": "cuci_desc", "ISIC Divisão": "isic_div_desc",
@@ -875,21 +893,13 @@ def page_comexstat_cross():
 
         c_sec1, c_sec2 = st.columns(2)
         with c_sec1:
-            # AJUSTADO PARA SCATTER PLOT
-            fig = px.scatter(
-                agg_sector, 
-                x="Valor_FOB", 
-                y="RCA_Medio", 
-                size="N_Produtos",
-                color="RCA_Medio",
-                hover_name=selected_col,
-                color_continuous_scale=["#3b82f6", "#10b981"],
-                title=f"Dispersão: Valor FOB x RCA Médio ({group_opt})",
-                labels={"Valor_FOB": "Valor FOB (US$)", "RCA_Medio": "RCA Médio", "N_Produtos": "Qtd Produtos"},
+            fig = px.bar(
+                agg_sector.head(12), x="Valor_FOB", y=selected_col, orientation="h",
+                color="RCA_Medio", color_continuous_scale=["#3b82f6", "#10b981"],
+                title=f"Top Setores por Valor FOB e RCA ({group_opt})",
                 template="plotly_white"
             )
-            fig.add_hline(y=1.0, line_dash="dash", line_color=PASTEL_COLORS["amber"])
-            fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+            fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", yaxis=dict(categoryorder="total ascending"))
             st.plotly_chart(fig, use_container_width=True)
 
         with c_sec2:
@@ -905,7 +915,7 @@ def page_comexstat_cross():
             )
 
 
-# --- MÓDULO 3: DIVERSIFICAÇÃO POR ESTADO (SCATTER PLOTS) ---
+# --- MÓDULO 3: DIVERSIFICAÇÃO POR ESTADO (UF) ---
 def page_state_diversification():
     st.title("🗺️ Potencial de Diversificação por Estado (UF)")
     st.caption("Oportunidades subnacionais baseadas na pauta local e vantagens nacionais")
@@ -927,6 +937,7 @@ def page_state_diversification():
         st.error("Não foi possível calcular os potenciais. Verifique a compatibilidade dos dados.")
         return
 
+    # KPIs de Oportunidade
     high_pot = df_potencial[(df_potencial["potencial_score"] > 1.0) & (~df_potencial["ja_exportado"])]
     
     k1, k2 = st.columns(2)
@@ -953,65 +964,39 @@ def page_state_diversification():
 
     st.markdown("---")
 
-    # Ranking de Estados — AJUSTADO PARA SCATTER PLOT
-    st.subheader("🏆 Matriz de Potencial por UF")
+    # Ranking de Estados
+    st.subheader("🏆 Ranking Subnacional de Potencial")
     rank_uf = df_potencial.groupby("uf").agg(
         Score_Potencial_Total=("potencial_score", "sum"),
         Produtos_Nao_Explorados=("ja_exportado", lambda s: int((~s).sum())),
         Exportacao_Atual_FOB=("uf_total", "first"),
     ).reset_index().sort_values("Score_Potencial_Total", ascending=False)
 
-    fig_rank = px.scatter(
-        rank_uf, 
-        x="Exportacao_Atual_FOB", 
-        y="Score_Potencial_Total",
-        size="Produtos_Nao_Explorados",
-        color="Score_Potencial_Total",
-        text="uf",
-        color_continuous_scale="Blues",
-        title="Dispersão: Exportação Atual (US$) x Score de Potencial Total",
-        labels={
-            "Exportacao_Atual_FOB": "Exportação Atual (US$)", 
-            "Score_Potencial_Total": "Score de Potencial Total",
-            "Produtos_Nao_Explorados": "Prod. Não Explorados"
-        },
+    fig_rank = px.bar(
+        rank_uf, x="Score_Potencial_Total", y="uf", orientation="h",
+        color="Exportacao_Atual_FOB", color_continuous_scale="Blues",
+        title="Score Total de Potencial por UF",
         template="plotly_white"
     )
-    fig_rank.update_traces(textposition='top center')
-    fig_rank.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+    fig_rank.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", yaxis=dict(categoryorder="total ascending"))
     st.plotly_chart(fig_rank, use_container_width=True)
 
     # Detalhamento Específico por UF
-    st.subheader("🔍 Oportunidades por Estado (UF)")
+    st.subheader("🔍 Filtro por Estado (UF)")
     uf_target = st.selectbox("Selecione o Estado:", sorted(df_potencial["uf"].unique()))
     df_uf_filtered = df_potencial[df_potencial["uf"] == uf_target]
 
-    only_new = st.checkbox("Mostrar apenas produtos NÃO exportados pela UF", value=True)
-    df_uf_seg = df_uf_filtered[~df_uf_filtered["ja_exportado"]] if only_new else df_uf_filtered
-
-    # AJUSTADO PARA SCATTER PLOT TOP OPORTUNIDADES
-    top_n = df_uf_seg.sort_values("potencial_score", ascending=False).head(20)
-    if not top_n.empty:
-        label_col = "sh6_desc" if "sh6_desc" in top_n.columns and top_n["sh6_desc"].notna().any() else "sh6_cod"
-        fig_top = px.scatter(
-            top_n, 
-            x="rca", 
-            y="potencial_score", 
-            size="mundo_valor",
-            color="potencial_score",
-            hover_name=label_col,
-            title=f"Top Produtos por RCA e Score de Potencial — {uf_target}",
-            labels={"rca": "RCA Brasil", "potencial_score": "Score de Potencial", "mundo_valor": "Demanda Global"},
-            template="plotly_white"
-        )
-        fig_top.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-        st.plotly_chart(fig_top, use_container_width=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        only_new = st.checkbox("Mostrar apenas produtos NÃO exportados pela UF", value=True)
+    
+    df_uf_display = df_uf_filtered[~df_uf_filtered["ja_exportado"]] if only_new else df_uf_filtered
 
     disp_cols = ["sh6_cod", "sh6_desc", "cuci_desc", "rca", "valor_fob", "share_local", "potencial_score"]
-    cols_to_show = [c for c in disp_cols if c in df_uf_seg.columns]
+    cols_to_show = [c for c in disp_cols if c in df_uf_display.columns]
 
     st.dataframe(
-        df_uf_seg[cols_to_show].sort_values("potencial_score", ascending=False),
+        df_uf_display[cols_to_show].sort_values("potencial_score", ascending=False),
         column_config={
             "rca": st.column_config.NumberColumn("RCA Brasil", format="%.2f"),
             "valor_fob": st.column_config.NumberColumn("Valor UF (US$)", format="$ %,.2f"),
