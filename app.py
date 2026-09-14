@@ -2,7 +2,7 @@
 """
 ==============================================================================
  SISTEMA DE ANÁLISE DE DIVERSIFICAÇÃO DAS EXPORTAÇÕES BRASILEIRAS
- (Cupertino Executive Edition) — Refactored Production Code
+ (Cupertino Executive Edition) — v6
 ==============================================================================
 """
 from __future__ import annotations
@@ -24,7 +24,6 @@ st.set_page_config(
     page_title="Diversificação das Exportações Brasileiras",
     page_icon="🌎",
     layout="wide",
-    initial_sidebar_state="expanded"
 )
 
 # ==============================================================================
@@ -38,7 +37,8 @@ def normalize_text(s) -> str:
     s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
     s = s.strip().lower()
     s = re.sub(r"[^a-z0-9]+", "_", s)
-    return re.sub(r"_+", "_", s).strip("_")
+    s = re.sub(r"_+", "_", s).strip("_")
+    return s
 
 
 def is_world_label(value) -> bool:
@@ -58,7 +58,7 @@ def read_any_file(file_bytes: bytes, file_name: str) -> pd.DataFrame:
     name = file_name.lower()
     raw = file_bytes
 
-    if name.endswith((".csv", ".txt")):
+    if name.endswith(".csv") or name.endswith(".txt"):
         for sep in [",", ";", "\t", "|"]:
             try:
                 df = pd.read_csv(io.BytesIO(raw), sep=sep, encoding="utf-8", low_memory=False)
@@ -71,7 +71,7 @@ def read_any_file(file_bytes: bytes, file_name: str) -> pd.DataFrame:
         except UnicodeDecodeError:
             return pd.read_csv(io.BytesIO(raw), sep=None, engine="python", encoding="latin-1", low_memory=False)
 
-    if name.endswith((".xlsx", ".xls")):
+    if name.endswith(".xlsx") or name.endswith(".xls"):
         return pd.read_excel(io.BytesIO(raw))
 
     if name.endswith(".parquet"):
@@ -89,7 +89,7 @@ def read_any_file(file_bytes: bytes, file_name: str) -> pd.DataFrame:
     raise ValueError(f"Formato de arquivo não suportado: {file_name}")
 
 
-def find_column(df: pd.DataFrame, keywords: list[str], exclude: list[str] | None = None) -> str | None:
+def find_column(df: pd.DataFrame, keywords: list, exclude: list | None = None):
     exclude = exclude or []
     norm_map = {c: normalize_text(c) for c in df.columns}
     for col, norm in norm_map.items():
@@ -101,7 +101,7 @@ def find_column(df: pd.DataFrame, keywords: list[str], exclude: list[str] | None
     return None
 
 
-def format_usd(x: float | int | None) -> str:
+def format_usd(x):
     if x is None or pd.isna(x):
         return "—"
     absx = abs(x)
@@ -115,7 +115,7 @@ def format_usd(x: float | int | None) -> str:
     return f"{sign}US$ {absx:,.0f}"
 
 
-def format_num(x: float | int | None, decimals: int = 2) -> str:
+def format_num(x, decimals=2):
     if x is None or pd.isna(x):
         return "—"
     return f"{x:,.{decimals}f}"
@@ -144,7 +144,14 @@ COMEXSTAT_FIELD_KEYWORDS = {
     "uf": ["sigla_uf", "uf", "estado"],
 }
 
-_COMEXSTAT_FIELD_ORDER = list(COMEXSTAT_FIELD_KEYWORDS.keys())
+_COMEXSTAT_FIELD_ORDER = [
+    "ano", "pais", "sh6_cod", "sh6_desc",
+    "cgce2_cod", "cgce2_desc", "cgce1_cod", "cgce1_desc",
+    "cuci_cod", "cuci_desc",
+    "isic_div_cod", "isic_div_desc", "isic_sec_cod", "isic_sec_desc",
+    "valor_fob", "uf",
+]
+
 COMEXSTAT_DESC_COLUMNS = [
     "sh6_desc", "cuci_cod", "cuci_desc",
     "isic_div_desc", "isic_sec_desc", "cgce1_desc", "cgce2_desc",
@@ -237,21 +244,20 @@ def standardize_comtrade(
         keep_list = set(rep_str_list) | {str(r).lower() for r in world_reporters_in_data}
         d = d[d["reporter"].astype(str).str.lower().isin(keep_list)]
 
-    return d.groupby(["ano", "reporter", "partner", "sh6", "sh6_desc"], as_index=False)["valor"].sum()
+    agg = d.groupby(["ano", "reporter", "partner", "sh6", "sh6_desc"], as_index=False)["valor"].sum()
+    return agg
 
 
 # ==============================================================================
-# 3. CÁLCULO DE MÉTRICAS BILATERAIS E POTENCIAIS
+# 3. CÁLCULO DE MÉTRICAS BILATERAIS
 # ==============================================================================
 
-@st.cache_data(show_spinner="Calculando vantagens comparativas...")
+@st.cache_data(show_spinner="Calculando métricas por parceiro...")
 def compute_comtrade_metrics(comtrade_tidy: pd.DataFrame, years: tuple) -> pd.DataFrame:
     years = tuple(sorted(set(int(y) for y in years)))
     df_filtered = comtrade_tidy[comtrade_tidy["ano"].isin(years)].copy()
-    empty_res = pd.DataFrame(columns=["ano", "reporter", "partner", "sh6", "sh6_desc", "valor", "mundo_valor", "rca_partner", "rsca_partner"])
-    
     if df_filtered.empty:
-        return empty_res
+        return pd.DataFrame(columns=["ano", "reporter", "partner", "sh6", "sh6_desc", "valor", "mundo_valor", "rca_partner", "rsca_partner"])
 
     year_partner_frames = []
 
@@ -260,7 +266,9 @@ def compute_comtrade_metrics(comtrade_tidy: pd.DataFrame, years: tuple) -> pd.Da
         if df_yr.empty:
             continue
 
-        for prt in df_yr["partner"].unique():
+        partners = df_yr["partner"].unique()
+        
+        for prt in partners:
             df_prt = df_yr[df_yr["partner"] == prt]
             if df_prt.empty:
                 continue
@@ -309,7 +317,7 @@ def compute_comtrade_metrics(comtrade_tidy: pd.DataFrame, years: tuple) -> pd.Da
             year_partner_frames.append(merged)
 
     if not year_partner_frames:
-        return empty_res
+        return pd.DataFrame(columns=["ano", "reporter", "partner", "sh6", "sh6_desc", "valor", "mundo_valor", "rca_partner", "rsca_partner"])
 
     out = pd.concat(year_partner_frames, ignore_index=True)
     return out[["ano", "reporter", "partner", "sh6", "sh6_desc", "valor", "mundo_valor", "rca_partner", "rsca_partner"]]
@@ -318,7 +326,10 @@ def compute_comtrade_metrics(comtrade_tidy: pd.DataFrame, years: tuple) -> pd.Da
 def compute_state_diversification_potentials(
     comexstat_uf: pd.DataFrame, comtrade_metrics: pd.DataFrame, year: int
 ) -> pd.DataFrame:
-    base_uf = comexstat_uf[comexstat_uf["ano"] == year].copy() if "ano" in comexstat_uf.columns else comexstat_uf.copy()
+    if "ano" in comexstat_uf.columns:
+        base_uf = comexstat_uf[comexstat_uf["ano"] == year].copy()
+    else:
+        base_uf = comexstat_uf.copy()
 
     required_cols = {"uf", "sh6_cod", "valor_fob"}
     if base_uf.empty or not required_cols.issubset(base_uf.columns):
@@ -349,7 +360,10 @@ def compute_state_diversification_potentials(
         return pd.DataFrame()
 
     desc_cols = [c for c in COMEXSTAT_DESC_COLUMNS if c in base_uf.columns and c != "sh6_desc"]
-    desc_map = base_uf.groupby("sh6_cod")[desc_cols].first() if desc_cols else pd.DataFrame(index=pd.Index([], name="sh6_cod"))
+    if desc_cols:
+        desc_map = base_uf.groupby("sh6_cod")[desc_cols].first()
+    else:
+        desc_map = pd.DataFrame(index=pd.Index([], name="sh6_cod"))
 
     ufs = sorted(base_uf["uf"].dropna().unique().tolist())
     sh6_advantage = advantage["sh6"].dropna().unique().tolist()
@@ -357,6 +371,7 @@ def compute_state_diversification_potentials(
         return pd.DataFrame()
 
     grid = pd.MultiIndex.from_product([ufs, sh6_advantage], names=["uf", "sh6_cod"]).to_frame(index=False)
+
     uf_totals = base_uf.groupby("uf")["valor_fob"].sum()
     grid["uf_total"] = grid["uf"].map(uf_totals).fillna(0.0)
 
@@ -378,7 +393,7 @@ def compute_state_diversification_potentials(
 
 
 # ==============================================================================
-# 4. DESIGN EXEC & STYLES (CUPERTINO THEME)
+# 4. DESIGN EXEC (CORREÇÃO DA SIDEBAR E FILTROS EM CARDS)
 # ==============================================================================
 
 def inject_custom_css():
@@ -386,138 +401,132 @@ def inject_custom_css():
         """
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
-        
-        :root {
-            --bg: #f8fafc;
-            --card: #ffffff;
-            --border: #e2e8f0;
-            --border-hover: #cbd5e1;
-            --text-primary: #0f172a;
-            --text-secondary: #475569;
-            --blue: #2563eb;
-            --green: #10b981;
-            --red: #ef4444;
-            --amber: #f59e0b;
-            --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-            --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
-        }
 
         html, body, [class*="st-"] {
-            font-family: -apple-system, BlinkMacSystemFont, "Plus Jakarta Sans", sans-serif;
-        }
-
-        .stApp {
-            background: var(--bg);
-            color: var(--text-primary);
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Plus Jakarta Sans", sans-serif;
+            background-color: #f4f6f9 !important;
+            color: #111827;
         }
 
         .block-container {
-            max-width: 1480px;
             padding-top: 1.8rem;
             padding-bottom: 3rem;
+            max-width: 96%;
         }
 
-        /* Headings */
-        h1 { font-weight: 800 !important; letter-spacing: -0.03em !important; font-size: 2.1rem !important; }
-        h2 { font-weight: 750 !important; letter-spacing: -0.02em !important; font-size: 1.4rem !important; }
-        h3 { font-weight: 700 !important; letter-spacing: -0.01em !important; font-size: 1.15rem !important; }
-
-        /* Sidebar Styling */
+        /* --- CORREÇÕES RÍGIDAS DA SIDEBAR --- */
         [data-testid="stSidebar"] {
             background-color: #ffffff !important;
-            border-right: 1px solid var(--border) !important;
-        }
-        
-        .sidebar-title {
-            font-size: 1.1rem;
-            font-weight: 800;
-            color: var(--text-primary);
-            margin-bottom: 0.2rem;
+            border-right: 1px solid #e5e7eb !important;
         }
 
-        .sidebar-section-title {
-            font-size: 0.72rem;
-            font-weight: 800;
-            letter-spacing: 0.06em;
+        [data-testid="stSidebar"] [data-testid="stFileUploader"] {
+            background: #f9fafb;
+            border: 1px stroke #e5e7eb;
+            border-radius: 12px;
+            padding: 10px;
+        }
+
+        /* Oculta ícones de texto quebrado da sidebar */
+        [data-testid="stSidebar"] .material-icons, 
+        [data-testid="stSidebar"] [data-testid="stIcon"] {
+            display: inline-block !important;
+        }
+
+        /* Estilização limpa do Expander na Sidebar */
+        [data-testid="stSidebar"] .streamlit-expanderHeader {
+            background-color: #f3f4f6 !important;
+            border-radius: 10px !important;
+            font-weight: 600 !important;
+            color: #374151 !important;
+        }
+
+        /* --- FILTROS EM CARD EXECUTIVO --- */
+        .filter-card {
+            background: #ffffff;
+            border-radius: 16px;
+            padding: 20px 24px;
+            border: 1px solid #e5e7eb;
+            box-shadow: 0px 2px 8px rgba(0, 0, 0, 0.02);
+            margin-bottom: 24px;
+        }
+
+        .filter-card-title {
+            font-size: 0.85rem;
+            font-weight: 700;
+            color: #4b5563;
             text-transform: uppercase;
-            color: var(--text-secondary);
-            margin: 1.2rem 0 0.5rem;
+            letter-spacing: 0.04em;
+            margin-bottom: 12px;
         }
 
-        /* KPI Cards */
-        .metric-card {
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 14px;
-            padding: 1rem 1.2rem;
-            box-shadow: var(--shadow-sm);
-            position: relative;
-            overflow: hidden;
+        /* Adjust Checkbox Vertically in Filter Bar */
+        .checkbox-container {
+            display: flex;
+            align-items: center;
             height: 100%;
+            padding-top: 24px;
+        }
+
+        /* --- CARDS DE MÉTRICAS (SKYMETRICS STYLE) --- */
+        .metric-card {
+            background: #ffffff;
+            border-radius: 16px;
+            padding: 20px 24px;
+            border: 1px solid #e5e7eb;
+            box-shadow: 0px 2px 8px rgba(0, 0, 0, 0.02);
+            margin-bottom: 20px;
         }
 
         .metric-card .label {
-            font-size: 0.68rem;
-            font-weight: 700;
-            color: var(--text-secondary);
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: #6b7280;
             text-transform: uppercase;
-            letter-spacing: 0.05em;
-            margin-bottom: 0.4rem;
+            letter-spacing: 0.03em;
+            margin-bottom: 6px;
         }
 
         .metric-card .value-container {
             display: flex;
             align-items: baseline;
             justify-content: space-between;
-            gap: 0.5rem;
         }
 
         .metric-card .value {
-            font-size: 1.55rem;
+            font-size: 1.9rem;
             font-weight: 800;
-            color: var(--text-primary);
-            letter-spacing: -0.03em;
+            color: #111827;
+            letter-spacing: -0.02em;
         }
 
-        /* Badges */
-        .badge {
+        .metric-card .badge {
             display: inline-flex;
             align-items: center;
-            padding: 0.2rem 0.5rem;
-            border-radius: 9999px;
-            font-size: 0.65rem;
+            padding: 4px 10px;
+            border-radius: 999px;
+            font-size: 0.75rem;
             font-weight: 700;
-            white-space: nowrap;
-        }
-        .badge-green { background: #ecfdf5; color: #047857; }
-        .badge-blue  { background: #eff6ff; color: #1d4ed8; }
-        .badge-amber { background: #fffbeb; color: #b45309; }
-        .badge-red   { background: #fef2f2; color: #b91c1c; }
-
-        /* Streamlit Element Overrides */
-        [data-testid="stVerticalBlockBorderWrapper"] {
-            background: #ffffff !important;
-            border: 1px solid var(--border) !important;
-            border-radius: 14px !important;
-            box-shadow: var(--shadow-sm) !important;
-            padding: 1rem !important;
         }
 
+        .badge-green { background: #ecfdf5; color: #10b981; }
+        .badge-blue { background: #eff6ff; color: #3b82f6; }
+        .badge-amber { background: #fef3c7; color: #f59e0b; }
+
+        /* Botões */
         .stButton>button {
-            border-radius: 8px !important;
+            border-radius: 10px !important;
             font-weight: 600 !important;
-            transition: all 0.2s ease !important;
+            border: 1px solid #d1d5db !important;
+            background: #ffffff !important;
+            color: #374151 !important;
+            box-shadow: 0px 1px 2px rgba(0, 0, 0, 0.05) !important;
         }
-
-        [data-testid="stDataFrame"] {
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            box-shadow: var(--shadow-sm);
-        }
-
-        /* Checkbox vertical align helper */
-        .checkbox-fix {
-            margin-top: 1.8rem;
+        
+        .stButton>button:hover {
+            background: #f9fafb !important;
+            border-color: #9ca3af !important;
+            color: #111827 !important;
         }
         </style>
         """,
@@ -526,206 +535,228 @@ def inject_custom_css():
 
 
 PASTEL_COLORS = {
-    "green": "#10b981",
-    "blue": "#3b82f6",
-    "amber": "#f59e0b",
-    "red": "#ef4444",
+    "green_main": "#10b981",
+    "blue_main": "#3b82f6",
+    "amber_main": "#f59e0b",
+    "red_main": "#ef4444",
 }
 
+
 # ==============================================================================
-# 5. INICIALIZAÇÃO DE ESTADO E SIDEBAR
+# 5. SIDEBAR & ESTADO DA APLICAÇÃO
 # ==============================================================================
 
 inject_custom_css()
 
-with st.sidebar:
-    st.markdown('<div class="sidebar-title">🌎 Navegação</div>', unsafe_allow_html=True)
-    st.caption("Inteligência e Diversificação Comercial")
+st.sidebar.title("🌎 Navegação")
+PAGE = st.sidebar.radio(
+    "Selecione o Módulo:",
+    [
+        "📊 RCA/RSCA Global (UN Comtrade)",
+        "🇧🇷 Cruzamento Nacional (ComexStat x Comtrade)",
+        "🗺️ Potencial de Diversificação por Estado (UF)",
+    ],
+)
 
-    PAGE = st.radio(
-        "Módulo Principal",
-        [
-            "📊 RCA/RSCA Global (UN Comtrade)",
-            "🇧🇷 Cruzamento Nacional (ComexStat x Comtrade)",
-            "🗺️ Potencial de Diversificação por Estado (UF)",
-        ],
-        label_visibility="collapsed"
-    )
+st.sidebar.divider()
+st.sidebar.header("📁 Carga de Dados")
 
-    st.divider()
-    st.markdown('<div class="sidebar-section-title">Bases de Dados</div>', unsafe_allow_html=True)
+file_comtrade = st.sidebar.file_uploader("1. UN Comtrade (CSV, XLSX, Parquet, JSON)", type=["csv", "xlsx", "xls", "parquet", "json"])
+file_comexstat = st.sidebar.file_uploader("2. ComexStat Brasil (Nacional)", type=["csv", "xlsx", "xls", "parquet"])
+file_comexstat_uf = st.sidebar.file_uploader("3. ComexStat por Estado (UF)", type=["csv", "xlsx", "xls", "parquet"])
 
-    file_comtrade = st.file_uploader(
-        "01 · UN Comtrade",
-        type=["csv", "xlsx", "xls", "parquet", "json"],
-        help="CSV, XLSX, Parquet ou JSON do UN Comtrade.",
-    )
+COMTRADE_FIXED_COLS = {
+    "year": "refYear",
+    "reporter": "ReporterDesc",
+    "partner": "PartnerDesc",
+    "sh6": "cmdCode",
+    "sh6_desc": "cmdDesc",
+}
 
-    file_comexstat = st.file_uploader(
-        "02 · ComexStat Nacional",
-        type=["csv", "xlsx", "xls", "parquet"],
-        help="Base nacional ComexStat por código SH6.",
-    )
+if file_comtrade:
+    if st.session_state.get("_file_comtrade_name") != file_comtrade.name:
+        raw_ct = read_any_file(file_comtrade.getvalue(), file_comtrade.name)
+        st.session_state["raw_comtrade"] = raw_ct
+        st.session_state["_file_comtrade_name"] = file_comtrade.name
+        st.session_state.pop("comtrade_tidy", None)
 
-    file_comexstat_uf = st.file_uploader(
-        "03 · ComexStat por Estado (UF)",
-        type=["csv", "xlsx", "xls", "parquet"],
-        help="Base ComexStat dividida por UF e SH6.",
-    )
+if file_comexstat:
+    if st.session_state.get("_file_comexstat_name") != file_comexstat.name:
+        raw_cs = read_any_file(file_comexstat.getvalue(), file_comexstat.name)
+        st.session_state["comexstat"] = standardize_comexstat(raw_cs)
+        st.session_state["_file_comexstat_name"] = file_comexstat.name
 
-# Processamento de Uploads na Session State
-if file_comtrade and st.session_state.get("_file_comtrade_name") != file_comtrade.name:
-    st.session_state["raw_comtrade"] = read_any_file(file_comtrade.getvalue(), file_comtrade.name)
-    st.session_state["_file_comtrade_name"] = file_comtrade.name
-    st.session_state.pop("comtrade_tidy", None)
+if file_comexstat_uf:
+    if st.session_state.get("_file_comexstat_uf_name") != file_comexstat_uf.name:
+        raw_cs_uf = read_any_file(file_comexstat_uf.getvalue(), file_comexstat_uf.name)
+        st.session_state["comexstat_uf"] = standardize_comexstat(raw_cs_uf)
+        st.session_state["_file_comexstat_uf_name"] = file_comexstat_uf.name
 
-if file_comexstat and st.session_state.get("_file_comexstat_name") != file_comexstat.name:
-    raw_cs = read_any_file(file_comexstat.getvalue(), file_comexstat.name)
-    st.session_state["comexstat"] = standardize_comexstat(raw_cs)
-    st.session_state["_file_comexstat_name"] = file_comexstat.name
-
-if file_comexstat_uf and st.session_state.get("_file_comexstat_uf_name") != file_comexstat_uf.name:
-    raw_cs_uf = read_any_file(file_comexstat_uf.getvalue(), file_comexstat_uf.name)
-    st.session_state["comexstat_uf"] = standardize_comexstat(raw_cs_uf)
-    st.session_state["_file_comexstat_uf_name"] = file_comexstat_uf.name
-
-# Processamento dinâmico de configurações Comtrade
 if "raw_comtrade" in st.session_state:
     df_ct = st.session_state["raw_comtrade"]
     cols = list(df_ct.columns)
+    
+    col_yr = find_column(df_ct, ["refyear"]) or COMTRADE_FIXED_COLS["year"]
+    col_rep = find_column(df_ct, ["reporterdesc"]) or COMTRADE_FIXED_COLS["reporter"]
+    col_prt = find_column(df_ct, ["partnerdesc"]) or COMTRADE_FIXED_COLS["partner"]
+    col_sh6 = find_column(df_ct, ["cmdcode"]) or COMTRADE_FIXED_COLS["sh6"]
+    col_desc = find_column(df_ct, ["cmddesc"]) or COMTRADE_FIXED_COLS["sh6_desc"]
 
-    col_yr = find_column(df_ct, ["refyear", "year", "ano"]) or "refYear"
-    col_rep = find_column(df_ct, ["reporterdesc", "reporter"]) or "ReporterDesc"
-    col_prt = find_column(df_ct, ["partnerdesc", "partner"]) or "PartnerDesc"
-    col_sh6 = find_column(df_ct, ["cmdcode", "sh6"]) or "cmdCode"
-    col_desc = find_column(df_ct, ["cmddesc", "sh6_desc"]) or "cmdDesc"
+    with st.sidebar.expander("⚙️ Configurações UN Comtrade", expanded=False):
+        st.caption("📌 **Campos fixos:** refYear, ReporterDesc, PartnerDesc, cmdCode, cmdDesc")
+        
+        value_candidates = [c for c in cols if any(v in normalize_text(c) for v in ["value", "val", "fob", "cif", "primaryvalue"])]
+        default_val_idx = cols.index(value_candidates[0]) if value_candidates else 0
+        c_val = st.selectbox("Campo de Valor:", cols, index=default_val_idx)
 
-    with st.sidebar.expander("⚙️ Configurações Comtrade", expanded=False):
-        val_candidates = [c for c in cols if any(v in normalize_text(c) for v in ["value", "val", "fob", "primaryvalue"])]
-        c_val = st.selectbox("Campo de Valor", cols, index=cols.index(val_candidates[0]) if val_candidates else 0)
+        if col_prt in df_ct.columns:
+            partners_list = sorted(df_ct[col_prt].dropna().astype(str).unique().tolist())
+            sel_partners = st.multiselect("Filtrar Parceiros (vazio = todos):", partners_list, default=[])
+        else:
+            sel_partners = []
 
-        partners_list = sorted(df_ct[col_prt].dropna().astype(str).unique()) if col_prt in df_ct.columns else []
-        sel_partners = st.multiselect("Filtrar Parceiros", partners_list, default=[])
+        if col_rep in df_ct.columns:
+            reporters_list = sorted(df_ct[col_rep].dropna().astype(str).unique().tolist())
+            sel_reporters = st.multiselect("Filtrar Reporters (vazio = todos):", reporters_list, default=[])
+        else:
+            sel_reporters = []
 
-        reporters_list = sorted(df_ct[col_rep].dropna().astype(str).unique()) if col_rep in df_ct.columns else []
-        sel_reporters = st.multiselect("Filtrar Declarantres", reporters_list, default=[])
+        missing_cols = [c for c in [col_yr, col_rep, col_prt, col_sh6] if c not in df_ct.columns]
+        
+        if missing_cols:
+            st.error(f"Colunas ausentes: {', '.join(missing_cols)}")
+        else:
+            if "comtrade_tidy" not in st.session_state:
+                try:
+                    st.session_state["comtrade_tidy"] = standardize_comtrade(
+                        df_ct, col_yr, col_rep, col_prt, col_sh6, col_desc, c_val, sel_partners, sel_reporters
+                    )
+                except Exception as e:
+                    st.error(f"Erro ao processar: {e}")
 
-        if st.button("Processar Base Comtrade", type="primary", use_container_width=True):
-            try:
-                st.session_state["comtrade_tidy"] = standardize_comtrade(
-                    df_ct, col_yr, col_rep, col_prt, col_sh6, col_desc, c_val, sel_partners, sel_reporters
-                )
-                st.success("Comtrade processado!")
-            except Exception as exc:
-                st.error(f"Erro ao padronizar: {exc}")
-
-    # Processamento automático inicial
-    if "comtrade_tidy" not in st.session_state and all(c in df_ct.columns for c in [col_yr, col_rep, col_prt, col_sh6]):
-        try:
-            st.session_state["comtrade_tidy"] = standardize_comtrade(
-                df_ct, col_yr, col_rep, col_prt, col_sh6, col_desc, c_val, sel_partners, sel_reporters
-            )
-        except Exception:
-            pass
-
+            if st.button("Aplicar / Re-processar", type="primary"):
+                try:
+                    tidy_ct = standardize_comtrade(
+                        df_ct, col_yr, col_rep, col_prt, col_sh6, col_desc, c_val, sel_partners, sel_reporters
+                    )
+                    st.session_state["comtrade_tidy"] = tidy_ct
+                    st.success("Comtrade processado!")
+                except Exception as exc:
+                    st.error(f"Falha ao processar: {exc}")
 
 # ==============================================================================
-# 6. MÓDULOS DE ANÁLISE
+# 6. MÓDULOS DA APLICAÇÃO
 # ==============================================================================
 
-# --- MÓDULO 1: UN COMTRADE RCA / RSCA ---
+# --- PÁGINA 1: UN COMTRADE RCA / RSCA ---
 def page_comtrade_global():
-    st.title("📊 Análise de Vantagens Comparativas (RCA / RSCA)")
-    st.caption("Cálculo bilateral de vantagens comparativas reveladas (Balassa & Laursen)")
+    st.title("📊 Análise de RCA e RSCA por Partner")
+    st.caption("Painel Executivo de Vantagens Comparativas Bilaterais (Balassa & Laursen)")
 
     if "comtrade_tidy" not in st.session_state:
-        st.info("👈 Por favor, carregue e processe a base UN Comtrade na barra lateral.")
+        st.info("👈 Por favor, carregue e processe o arquivo do UN Comtrade na barra lateral.")
         return
 
     tidy = st.session_state["comtrade_tidy"]
-    anos = sorted(int(a) for a in tidy["ano"].dropna().unique())
+    anos = sorted(int(a) for a in tidy["ano"].dropna().unique().tolist())
     if not anos:
-        st.error("Nenhum ano válido encontrado nos dados.")
+        st.error("A base processada não contém anos válidos.")
         return
 
-    # Painel de Filtros Integrado
-    with st.container(border=True):
-        st.markdown("**🔍 Filtros da Análise**")
-        c1, c2, c3, c4 = st.columns([1, 1, 1.5, 1.5])
-        with c1:
-            start_year = st.selectbox("Ano Inicial", anos, index=0)
-        with c2:
-            end_year = st.selectbox("Ano Final", anos, index=len(anos) - 1)
+    # --- CARD DE FILTROS SUPERIOR ---
+    st.markdown('<div class="filter-card">', unsafe_allow_html=True)
+    st.markdown('<div class="filter-card-title">🔍 Filtros Principais</div>', unsafe_allow_html=True)
+    
+    col_a, col_b = st.columns(2)
+    with col_a:
+        start_year = st.selectbox("Ano de Início", anos, index=0)
+    with col_b:
+        end_year = st.selectbox("Ano Final", anos, index=len(anos) - 1)
 
-        years_range = [y for y in anos if start_year <= y <= end_year] or [start_year]
-        df_metrics = compute_comtrade_metrics(tidy, tuple(years_range))
+    years_range = [y for y in anos if start_year <= y <= end_year] or [start_year]
+    df_metrics = compute_comtrade_metrics(tidy, tuple(years_range))
 
-        if df_metrics.empty:
-            st.warning("Sem dados para o período selecionado.")
-            return
+    if df_metrics.empty:
+        st.warning("Não há dados suficientes para o intervalo de anos selecionado.")
+        st.markdown('</div>', unsafe_allow_html=True)
+        return
 
-        with c3:
-            reps = st.multiselect("Declarante (Reporter)", sorted(df_metrics["reporter"].unique()))
-        with c4:
-            prts = st.multiselect("Parceiro (Partner)", sorted(df_metrics["partner"].unique()))
+    f_col1, f_col2, f_col3, f_col4 = st.columns([1, 1, 1, 1])
+    with f_col1:
+        reps = st.multiselect("Reporter (País):", sorted(df_metrics["reporter"].unique()))
+    with f_col2:
+        prts = st.multiselect("Partner (Parceiro):", sorted(df_metrics["partner"].unique()))
+    with f_col3:
+        sh6s = st.multiselect("SH6:", sorted(df_metrics["sh6"].unique()))
+    with f_col4:
+        st.markdown('<div class="checkbox-container">', unsafe_allow_html=True)
+        only_advantage = st.checkbox("Apenas RCA por Partner ≥ 1")
+        st.markdown('</div>', unsafe_allow_html=True)
 
-        c5, c6 = st.columns([3, 1])
-        with c5:
-            sh6s = st.multiselect("Código SH6", sorted(df_metrics["sh6"].unique()))
-        with c6:
-            st.markdown('<div class="checkbox-fix">', unsafe_allow_html=True)
-            only_adv = st.checkbox("Apenas RCA ≥ 1.0")
-            st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
 
     filtered_df = df_metrics.copy()
-    if reps: filtered_df = filtered_df[filtered_df["reporter"].isin(reps)]
-    if prts: filtered_df = filtered_df[filtered_df["partner"].isin(prts)]
-    if sh6s: filtered_df = filtered_df[filtered_df["sh6"].isin(sh6s)]
-    if only_adv: filtered_df = filtered_df[filtered_df["rca_partner"] >= 1.0]
+    if reps:
+        filtered_df = filtered_df[filtered_df["reporter"].isin(reps)]
+    if prts:
+        filtered_df = filtered_df[filtered_df["partner"].isin(prts)]
+    if sh6s:
+        filtered_df = filtered_df[filtered_df["sh6"].isin(sh6s)]
+    if only_advantage:
+        filtered_df = filtered_df[filtered_df["rca_partner"] >= 1.0]
 
-    # KPIs Executivos
-    k1, k2, k3 = st.columns(3)
-    with k1:
+    # CARDS DE MÉTRICAS EXECUTIVAS
+    c_m1, c_m2, c_m3 = st.columns(3)
+    with c_m1:
         st.markdown(
-            f"""<div class="metric-card">
-                <div class="label">Registros Selecionados</div>
+            f"""
+            <div class="metric-card">
+                <div class="label">Registros Analisados</div>
                 <div class="value-container">
                     <div class="value">{len(filtered_df):,}</div>
-                    <span class="badge badge-blue">Tidy Dataset</span>
+                    <span class="badge badge-blue">Tidy Base</span>
                 </div>
-            </div>""", unsafe_allow_html=True
+            </div>
+            """, unsafe_allow_html=True
         )
-    with k2:
+
+    with c_m2:
         rca_avg = filtered_df['rca_partner'].mean()
         st.markdown(
-            f"""<div class="metric-card">
-                <div class="label">Média RCA Bilateral</div>
+            f"""
+            <div class="metric-card">
+                <div class="label">Média do RCA Bilateral</div>
                 <div class="value-container">
                     <div class="value">{format_num(rca_avg, 2)}</div>
                     <span class="badge badge-green">Balassa</span>
                 </div>
-            </div>""", unsafe_allow_html=True
+            </div>
+            """, unsafe_allow_html=True
         )
-    with k3:
+
+    with c_m3:
         rsca_avg = filtered_df['rsca_partner'].mean()
         st.markdown(
-            f"""<div class="metric-card">
-                <div class="label">Média RSCA Simétrico</div>
+            f"""
+            <div class="metric-card">
+                <div class="label">Média do RSCA Bilateral</div>
                 <div class="value-container">
                     <div class="value">{format_num(rsca_avg, 2)}</div>
                     <span class="badge badge-amber">Laursen</span>
                 </div>
-            </div>""", unsafe_allow_html=True
+            </div>
+            """, unsafe_allow_html=True
         )
 
-    st.markdown("---")
+    st.subheader("Resultados Detalhados com Rótulo Dinâmico por Parceiro")
     
-    # Tabela com Títulos Dinâmicos
+    display_df = filtered_df.copy()
     partner_title = prts[0] if len(prts) == 1 else "Parceiro Selecionado"
+    
     rca_col_name = f"RCA ({partner_title})"
     rsca_col_name = f"RSCA ({partner_title})"
 
-    display_df = filtered_df.rename(columns={
+    display_df = display_df.rename(columns={
         "rca_partner": rca_col_name,
         "rsca_partner": rsca_col_name
     })
@@ -734,70 +765,129 @@ def page_comtrade_global():
         display_df,
         column_config={
             "valor": st.column_config.NumberColumn("Valor (US$)", format="$ %,.2f"),
-            "mundo_valor": st.column_config.NumberColumn("Total Mundo (US$)", format="$ %,.2f"),
-            rca_col_name: st.column_config.NumberColumn(format="%.4f"),
-            rsca_col_name: st.column_config.NumberColumn(format="%.4f"),
+            "mundo_valor": st.column_config.NumberColumn("Mundo Valor (US$)", format="$ %,.2f"),
+            rca_col_name: st.column_config.NumberColumn(rca_col_name, format="%.4f"),
+            rsca_col_name: st.column_config.NumberColumn(rsca_col_name, format="%.4f"),
             "ano": st.column_config.NumberColumn("Ano", format="%d"),
+            "partner": "Parceiro Comercial",
+            "reporter": "País Declarante",
         },
-        use_container_width=True,
-        height=350,
+        height=380,
     )
 
-    # Visualizações Gráficas
-    st.subheader("📈 Distribuições e Desempenho")
-    g1, g2 = st.columns(2)
+    st.divider()
 
-    with g1:
+    # --- GRÁFICOS SEPARADOS ---
+    st.subheader("📈 Análise Comparativa Executiva")
+    chart_col1, chart_col2 = st.columns(2)
+
+    with chart_col1:
+        st.markdown("#### **Índice RCA (Balassa)**")
         fig_rca = px.histogram(
             filtered_df, x="rca_partner", color="partner",
             hover_data=["sh6_desc", "reporter"],
-            title="Distribuição de RCA por Parceiro",
+            title="Distribuição do RCA por Partner",
             labels={"rca_partner": "Índice RCA", "partner": "Parceiro"},
-            template="plotly_white", nbins=30
+            template="plotly_white",
+            nbins=30,
         )
         fig_rca.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-        fig_rca.add_vline(x=1.0, line_dash="dash", line_color=PASTEL_COLORS["blue"])
+        fig_rca.add_vline(x=1.0, line_dash="dash", line_color=PASTEL_COLORS["blue_main"])
         st.plotly_chart(fig_rca, use_container_width=True)
 
-    with g2:
+    with chart_col2:
+        st.markdown("#### **Índice RSCA (Laursen Simétrico)**")
         fig_rsca = px.box(
             filtered_df, x="partner", y="rsca_partner", color="partner",
             hover_data=["sh6_desc", "reporter"],
-            title="Simetria do RSCA (-1 a +1)",
+            title="Amplitude do RSCA Simétrico (-1 a +1)",
             labels={"rsca_partner": "Índice RSCA", "partner": "Parceiro"},
-            template="plotly_white"
+            template="plotly_white",
         )
         fig_rsca.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", showlegend=False)
-        fig_rsca.add_hline(y=0, line_dash="dash", line_color=PASTEL_COLORS["red"])
+        fig_rsca.add_hline(y=0, line_dash="dash", line_color=PASTEL_COLORS["red_main"])
         st.plotly_chart(fig_rsca, use_container_width=True)
 
+    if len(years_range) > 1:
+        st.divider()
+        st.subheader("📉 Evolução Temporal de Métricas Bilaterais")
+        
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            trend_reporter = st.selectbox("País:", sorted(df_metrics["reporter"].unique()), key="trend_rep")
+        with c2:
+            trend_partner = st.selectbox("Parceiro:", sorted(df_metrics[df_metrics["reporter"] == trend_reporter]["partner"].unique()), key="trend_prt")
+        opts_sh6 = sorted(df_metrics[(df_metrics["reporter"] == trend_reporter) & (df_metrics["partner"] == trend_partner)]["sh6"].unique())
+        with c3:
+            trend_sh6 = st.selectbox("Produto (SH6):", opts_sh6, key="trend_sh6")
 
-# --- MÓDULO 2: CRUZAMENTO COMEXSTAT X COMTRADE ---
+        trend_df = df_metrics[
+            (df_metrics["reporter"] == trend_reporter) & 
+            (df_metrics["partner"] == trend_partner) & 
+            (df_metrics["sh6"] == trend_sh6)
+        ].sort_values("ano")
+
+        if not trend_df.empty:
+            t_col1, t_col2 = st.columns(2)
+            
+            with t_col1:
+                fig_trend_rca = px.line(
+                    trend_df, x="ano", y="rca_partner", markers=True,
+                    title=f"Evolução RCA — {trend_reporter} x {trend_partner}",
+                    labels={"rca_partner": f"RCA ({trend_partner})", "ano": "Ano"},
+                    template="plotly_white",
+                )
+                fig_trend_rca.update_traces(line_color=PASTEL_COLORS["blue_main"])
+                fig_trend_rca.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+                fig_trend_rca.add_hline(y=1.0, line_dash="dot", line_color=PASTEL_COLORS["amber_main"])
+                st.plotly_chart(fig_trend_rca, use_container_width=True)
+
+            with t_col2:
+                fig_trend_rsca = px.line(
+                    trend_df, x="ano", y="rsca_partner", markers=True,
+                    title=f"Evolução RSCA — {trend_reporter} x {trend_partner}",
+                    labels={"rsca_partner": f"RSCA ({trend_partner})", "ano": "Ano"},
+                    template="plotly_white",
+                )
+                fig_trend_rsca.update_traces(line_color=PASTEL_COLORS["green_main"])
+                fig_trend_rsca.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+                fig_trend_rsca.add_hline(y=0.0, line_dash="dot", line_color=PASTEL_COLORS["red_main"])
+                st.plotly_chart(fig_trend_rsca, use_container_width=True)
+
+
+# --- PÁGINA 2: CRUZAMENTO BRASIL COMEXSTAT X COMTRADE ---
 def page_comexstat_cross():
     st.title("🇧🇷 Cruzamento Pauta Brasil x Competitividade Global")
-    st.caption("Pauta nacional ComexStat alinhada às vantagens globais calculadas via Comtrade")
+    st.caption("Alinhamento estratégico entre a pauta nacional e o RCA/RSCA médio bilateral")
 
     if "comexstat" not in st.session_state or "comtrade_tidy" not in st.session_state:
-        st.warning("⚠️ Carregue as bases ComexStat Brasil e UN Comtrade na barra lateral.")
+        st.warning("⚠️ É necessário carregar AMBOS os arquivos (ComexStat Brasil e UN Comtrade) na barra lateral.")
         return
 
     cs = st.session_state["comexstat"]
     ct = st.session_state["comtrade_tidy"]
 
-    anos_cs = sorted(int(a) for a in cs["ano"].dropna().unique())
-    selected_year = st.selectbox("Ano de Referência:", anos_cs, index=len(anos_cs) - 1)
+    if "ano" not in cs.columns or "sh6_cod" not in cs.columns:
+        st.error("A base do ComexStat Brasil precisa conter colunas de Ano e Código SH6.")
+        return
+
+    anos_cs = sorted(int(a) for a in cs["ano"].dropna().unique().tolist())
+    selected_year = st.selectbox("Selecione o Ano para Análise Cruzada:", anos_cs, index=len(anos_cs) - 1)
 
     ct_metrics = compute_comtrade_metrics(ct, (selected_year,))
     if ct_metrics.empty:
-        st.warning("Sem dados do Comtrade para o ano selecionado.")
+        st.warning("Não há dados do Comtrade para o ano selecionado.")
         return
 
-    brazil_rep = next((r for r in ct_metrics["reporter"].unique() if normalize_text(r) in ("brazil", "brasil", "bra")), None)
-    if not brazil_rep:
-        st.error("País 'Brazil' não identificado nos dados do Comtrade.")
+    brazil_rep = next(
+        (r for r in ct_metrics["reporter"].unique() if normalize_text(r) in ("brazil", "brasil", "bra")),
+        None,
+    )
+    if brazil_rep is None:
+        st.error("Não foi encontrado um reporter 'Brazil'/'Brasil' nos dados do Comtrade processados.")
         return
-
-    br_ct = ct_metrics[ct_metrics["reporter"] == brazil_rep].groupby("sh6").agg(
+        
+    br_ct = ct_metrics[ct_metrics["reporter"] == brazil_rep].groupby(["sh6"]).agg(
         rca=("rca_partner", "mean"),
         rsca=("rsca_partner", "mean"),
         mundo_valor=("mundo_valor", "sum")
@@ -807,18 +897,21 @@ def page_comexstat_cross():
     merged["rca"] = merged["rca"].fillna(0)
     merged["rsca"] = merged["rsca"].fillna(-1)
 
-    with st.container(border=True):
-        st.markdown("**🔍 Filtros Setoriais**")
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            f_sh6 = st.multiselect("SH6", sorted(merged["sh6_cod"].dropna().unique()))
-            f_cuci = st.multiselect("CUCI Grupo", sorted(merged["cuci_desc"].dropna().unique()) if "cuci_desc" in merged.columns else [])
-        with c2:
-            f_isic_div = st.multiselect("ISIC Divisão", sorted(merged["isic_div_desc"].dropna().unique()) if "isic_div_desc" in merged.columns else [])
-            f_isic_sec = st.multiselect("ISIC Seção", sorted(merged["isic_sec_desc"].dropna().unique()) if "isic_sec_desc" in merged.columns else [])
-        with c3:
-            f_cgce1 = st.multiselect("CGCE Nível 1", sorted(merged["cgce1_desc"].dropna().unique()) if "cgce1_desc" in merged.columns else [])
-            f_cgce2 = st.multiselect("CGCE Nível 2", sorted(merged["cgce2_desc"].dropna().unique()) if "cgce2_desc" in merged.columns else [])
+    st.markdown('<div class="filter-card">', unsafe_allow_html=True)
+    st.markdown('<div class="filter-card-title">🔍 Filtros de Segmentação</div>', unsafe_allow_html=True)
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        f_sh6 = st.multiselect("SH6:", sorted(merged["sh6_cod"].dropna().unique()))
+        f_cuci = st.multiselect("CUCI Grupo:", sorted(merged["cuci_desc"].dropna().unique()) if "cuci_desc" in merged.columns else [])
+    with col2:
+        f_isic_div = st.multiselect("ISIC Divisão:", sorted(merged["isic_div_desc"].dropna().unique()) if "isic_div_desc" in merged.columns else [])
+        f_isic_sec = st.multiselect("ISIC Seção:", sorted(merged["isic_sec_desc"].dropna().unique()) if "isic_sec_desc" in merged.columns else [])
+    with col3:
+        f_cgce1 = st.multiselect("CGCE Nível 1:", sorted(merged["cgce1_desc"].dropna().unique()) if "cgce1_desc" in merged.columns else [])
+        f_cgce2 = st.multiselect("CGCE Nível 2:", sorted(merged["cgce2_desc"].dropna().unique()) if "cgce2_desc" in merged.columns else [])
+
+    st.markdown('</div>', unsafe_allow_html=True)
 
     df_f = merged.copy()
     if f_sh6: df_f = df_f[df_f["sh6_cod"].isin(f_sh6)]
@@ -828,58 +921,58 @@ def page_comexstat_cross():
     if f_cgce1 and "cgce1_desc" in df_f.columns: df_f = df_f[df_f["cgce1_desc"].isin(f_cgce1)]
     if f_cgce2 and "cgce2_desc" in df_f.columns: df_f = df_f[df_f["cgce2_desc"].isin(f_cgce2)]
 
-    # Metrics Layout Unificado
-    m1, m2, m3, m4 = st.columns(4)
-    with m1:
+    val_tot = df_f["valor_fob"].sum()
+    produtos_vantagem = df_f[df_f["rca"] >= 1.0]["sh6_cod"].nunique()
+
+    c_m1, c_m2, c_m3 = st.columns(3)
+    with c_m1:
         st.markdown(
-            f"""<div class="metric-card">
-                <div class="label">Exportado (FOB)</div>
+            f"""
+            <div class="metric-card">
+                <div class="label">Valor Exportado (FOB)</div>
                 <div class="value-container">
-                    <div class="value">{format_usd(df_f['valor_fob'].sum())}</div>
+                    <div class="value">{format_usd(val_tot)}</div>
                     <span class="badge badge-blue">ComexStat</span>
                 </div>
-            </div>""", unsafe_allow_html=True
+            </div>
+            """, unsafe_allow_html=True
         )
-    with m2:
+
+    with c_m2:
         st.markdown(
-            f"""<div class="metric-card">
-                <div class="label">Produtos Distintos</div>
+            f"""
+            <div class="metric-card">
+                <div class="label">Produtos Monitorados</div>
                 <div class="value-container">
                     <div class="value">{df_f['sh6_cod'].nunique():,}</div>
                     <span class="badge badge-amber">SH6</span>
                 </div>
-            </div>""", unsafe_allow_html=True
+            </div>
+            """, unsafe_allow_html=True
         )
-    with m3:
-        produtos_adv = df_f[df_f["rca"] >= 1.0]["sh6_cod"].nunique()
+
+    with c_m3:
         st.markdown(
-            f"""<div class="metric-card">
-                <div class="label">Com Vantagem</div>
+            f"""
+            <div class="metric-card">
+                <div class="label">Produtos Competitivos</div>
                 <div class="value-container">
-                    <div class="value">{produtos_adv:,}</div>
+                    <div class="value">{produtos_vantagem:,}</div>
                     <span class="badge badge-green">RCA ≥ 1.0</span>
                 </div>
-            </div>""", unsafe_allow_html=True
-        )
-    with m4:
-        produtos_dis = df_f[df_f["rca"] < 1.0]["sh6_cod"].nunique()
-        st.markdown(
-            f"""<div class="metric-card">
-                <div class="label">Sem Vantagem</div>
-                <div class="value-container">
-                    <div class="value">{produtos_dis:,}</div>
-                    <span class="badge badge-red">RCA &lt; 1.0</span>
-                </div>
-            </div>""", unsafe_allow_html=True
+            </div>
+            """, unsafe_allow_html=True
         )
 
-    st.markdown("---")
-
-    # Visualização por Agrupamento Setorial
+    st.subheader("📊 Distribuição de Exportação por Setor")
     group_opt = st.selectbox("Agrupar Visualização por:", ["CUCI Grupo", "ISIC Divisão", "ISIC Seção", "CGCE Nível 1", "CGCE Nível 2"])
+
     col_map = {
-        "CUCI Grupo": "cuci_desc", "ISIC Divisão": "isic_div_desc",
-        "ISIC Seção": "isic_sec_desc", "CGCE Nível 1": "cgce1_desc", "CGCE Nível 2": "cgce2_desc"
+        "CUCI Grupo": "cuci_desc",
+        "ISIC Divisão": "isic_div_desc",
+        "ISIC Seção": "isic_sec_desc",
+        "CGCE Nível 1": "cgce1_desc",
+        "CGCE Nível 2": "cgce2_desc",
     }
     selected_col = col_map[group_opt]
 
@@ -891,125 +984,202 @@ def page_comexstat_cross():
             N_Produtos=("sh6_cod", "nunique"),
         ).reset_index().sort_values("Valor_FOB", ascending=False)
 
-        c_sec1, c_sec2 = st.columns(2)
-        with c_sec1:
-            fig = px.bar(
-                agg_sector.head(12), x="Valor_FOB", y=selected_col, orientation="h",
+        col_sec1, col_sec2 = st.columns(2)
+
+        with col_sec1:
+            fig_sec_rca = px.bar(
+                agg_sector.head(15), x="Valor_FOB", y=selected_col, orientation="h",
                 color="RCA_Medio", color_continuous_scale=["#3b82f6", "#10b981"],
-                title=f"Top Setores por Valor FOB e RCA ({group_opt})",
-                template="plotly_white"
+                title=f"Top 15 Setores por Valor e RCA Médio ({group_opt})",
+                labels={"Valor_FOB": "Valor FOB (US$)", selected_col: "Setor", "RCA_Medio": "RCA Médio"},
+                template="plotly_white",
             )
-            fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", yaxis=dict(categoryorder="total ascending"))
-            st.plotly_chart(fig, use_container_width=True)
+            fig_sec_rca.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig_sec_rca, use_container_width=True)
 
-        with c_sec2:
-            st.dataframe(
-                agg_sector,
-                column_config={
-                    "Valor_FOB": st.column_config.NumberColumn("Valor FOB (US$)", format="$ %,.2f"),
-                    "RCA_Medio": st.column_config.NumberColumn("RCA Médio", format="%.2f"),
-                    "RSCA_Medio": st.column_config.NumberColumn("RSCA Médio", format="%.2f"),
-                },
-                use_container_width=True,
-                height=380,
+        with col_sec2:
+            fig_sec_rsca = px.bar(
+                agg_sector.head(15), x="Valor_FOB", y=selected_col, orientation="h",
+                color="RSCA_Medio", color_continuous_scale=["#ef4444", "#f59e0b", "#10b981"],
+                title=f"Top 15 Setores por Valor e RSCA Médio ({group_opt})",
+                labels={"Valor_FOB": "Valor FOB (US$)", selected_col: "Setor", "RSCA_Medio": "RSCA Médio"},
+                template="plotly_white",
             )
+            fig_sec_rsca.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig_sec_rsca, use_container_width=True)
+
+        st.dataframe(
+            agg_sector,
+            column_config={
+                "Valor_FOB": st.column_config.NumberColumn("Valor FOB (US$)", format="$ %,.2f"),
+                "RCA_Medio": st.column_config.NumberColumn("RCA Médio", format="%.2f"),
+                "RSCA_Medio": st.column_config.NumberColumn("RSCA Médio", format="%.2f"),
+                "N_Produtos": st.column_config.NumberColumn("Produtos SH6", format="%d"),
+            },
+        )
+    else:
+        st.info(f"A coluna '{group_opt}' não foi encontrada na base carregada.")
 
 
-# --- MÓDULO 3: DIVERSIFICAÇÃO POR ESTADO (UF) ---
+# --- PÁGINA 3: POTENCIAL DE DIVERSIFICAÇÃO POR ESTADO (UF) ---
 def page_state_diversification():
     st.title("🗺️ Potencial de Diversificação por Estado (UF)")
-    st.caption("Oportunidades subnacionais baseadas na pauta local e vantagens nacionais")
+    st.caption("Cruzamento subnacional para identificação de produtos estratégicos subaproveitados")
 
     if "comexstat_uf" not in st.session_state or "comtrade_tidy" not in st.session_state:
-        st.warning("⚠️ Carregue a base do ComexStat por Estado (UF) e o UN Comtrade.")
+        st.warning("⚠️ É necessário carregar a planilha do ComexStat por Estado (UF) e o UN Comtrade.")
         return
 
     cs_uf = st.session_state["comexstat_uf"]
     ct = st.session_state["comtrade_tidy"]
 
-    anos_uf = sorted(int(a) for a in cs_uf["ano"].dropna().unique())
-    selected_year = st.selectbox("Ano de Análise:", anos_uf, index=len(anos_uf) - 1)
+    if "ano" not in cs_uf.columns or "uf" not in cs_uf.columns or "sh6_cod" not in cs_uf.columns:
+        st.error("A base do ComexStat por Estado precisa conter colunas de Ano, UF e Código SH6.")
+        return
+
+    anos_uf = sorted(int(a) for a in cs_uf["ano"].dropna().unique().tolist())
+    selected_year = st.selectbox("Ano de Análise Subnacional:", anos_uf, index=len(anos_uf) - 1)
 
     ct_metrics = compute_comtrade_metrics(ct, (selected_year,))
+    if ct_metrics.empty:
+        st.warning("Não há dados do Comtrade para o ano selecionado.")
+        return
+
     df_potencial = compute_state_diversification_potentials(cs_uf, ct_metrics, selected_year)
 
     if df_potencial.empty:
-        st.error("Não foi possível calcular os potenciais. Verifique a compatibilidade dos dados.")
+        st.error(
+            "Não foi possível calcular o potencial com os dados fornecidos. Verifique se o Brasil "
+            "aparece como reporter no Comtrade e se há produtos com RCA ≥ 1 no ano selecionado."
+        )
         return
 
-    # KPIs de Oportunidade
-    high_pot = df_potencial[(df_potencial["potencial_score"] > 1.0) & (~df_potencial["ja_exportado"])]
-    
-    k1, k2 = st.columns(2)
-    with k1:
+    n_alto_potencial = df_potencial[(df_potencial["potencial_score"] > 1.0) & (~df_potencial["ja_exportado"])]["sh6_cod"].nunique()
+    n_vantagem_nacional = df_potencial["sh6_cod"].nunique()
+    val_mercado_oportunidade = df_potencial[(df_potencial["potencial_score"] > 1.0) & (~df_potencial["ja_exportado"])].drop_duplicates("sh6_cod")["mundo_valor"].sum()
+
+    c_m1, c_m2 = st.columns(2)
+    with c_m1:
         st.markdown(
-            f"""<div class="metric-card">
-                <div class="label">Oportunidades de Alta Prioridade (Não Exportadas)</div>
+            f"""
+            <div class="metric-card">
+                <div class="label">Oportunidades Locais de Alta Prioridade</div>
                 <div class="value-container">
-                    <div class="value">{high_pot['sh6_cod'].nunique():,}</div>
-                    <span class="badge badge-green">Score > 1.0</span>
+                    <div class="value">{n_alto_potencial:,}</div>
+                    <span class="badge badge-green">Demanda {format_usd(val_mercado_oportunidade)}</span>
                 </div>
-            </div>""", unsafe_allow_html=True
-        )
-    with k2:
-        st.markdown(
-            f"""<div class="metric-card">
-                <div class="label">Portfólio com Vantagem Nacional</div>
-                <div class="value-container">
-                    <div class="value">{df_potencial['sh6_cod'].nunique():,}</div>
-                    <span class="badge badge-blue">RCA Brasil ≥ 1.0</span>
-                </div>
-            </div>""", unsafe_allow_html=True
+            </div>
+            """, unsafe_allow_html=True
         )
 
-    st.markdown("---")
+    with c_m2:
+        st.markdown(
+            f"""
+            <div class="metric-card">
+                <div class="label">Produtos no Portfólio Nacional Competitivo</div>
+                <div class="value-container">
+                    <div class="value">{n_vantagem_nacional:,}</div>
+                    <span class="badge badge-blue">RCA ≥ 1.0</span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True
+        )
 
-    # Ranking de Estados
-    st.subheader("🏆 Ranking Subnacional de Potencial")
+    st.subheader("🏆 Ranking Subnacional por Score de Potencial")
+
     rank_uf = df_potencial.groupby("uf").agg(
         Score_Potencial_Total=("potencial_score", "sum"),
         Produtos_Nao_Explorados=("ja_exportado", lambda s: int((~s).sum())),
         Exportacao_Atual_FOB=("uf_total", "first"),
     ).reset_index().sort_values("Score_Potencial_Total", ascending=False)
 
-    fig_rank = px.bar(
+    fig_uf_rank = px.bar(
         rank_uf, x="Score_Potencial_Total", y="uf", orientation="h",
-        color="Exportacao_Atual_FOB", color_continuous_scale="Blues",
-        title="Score Total de Potencial por UF",
-        template="plotly_white"
+        color="Exportacao_Atual_FOB", color_continuous_scale=["#eff6ff", "#3b82f6", "#1d4ed8"],
+        title="Estados com Maior Potencial de Diversificação",
+        labels={"Score_Potencial_Total": "Score de Potencial", "uf": "Estado", "Exportacao_Atual_FOB": "Exportação Atual (US$)"},
+        template="plotly_white",
     )
-    fig_rank.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", yaxis=dict(categoryorder="total ascending"))
-    st.plotly_chart(fig_rank, use_container_width=True)
-
-    # Detalhamento Específico por UF
-    st.subheader("🔍 Filtro por Estado (UF)")
-    uf_target = st.selectbox("Selecione o Estado:", sorted(df_potencial["uf"].unique()))
-    df_uf_filtered = df_potencial[df_potencial["uf"] == uf_target]
-
-    c1, c2 = st.columns(2)
-    with c1:
-        only_new = st.checkbox("Mostrar apenas produtos NÃO exportados pela UF", value=True)
-    
-    df_uf_display = df_uf_filtered[~df_uf_filtered["ja_exportado"]] if only_new else df_uf_filtered
-
-    disp_cols = ["sh6_cod", "sh6_desc", "cuci_desc", "rca", "valor_fob", "share_local", "potencial_score"]
-    cols_to_show = [c for c in disp_cols if c in df_uf_display.columns]
+    fig_uf_rank.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", yaxis=dict(categoryorder="total ascending"))
+    st.plotly_chart(fig_uf_rank, use_container_width=True)
 
     st.dataframe(
-        df_uf_display[cols_to_show].sort_values("potencial_score", ascending=False),
+        rank_uf,
         column_config={
-            "rca": st.column_config.NumberColumn("RCA Brasil", format="%.2f"),
-            "valor_fob": st.column_config.NumberColumn("Valor UF (US$)", format="$ %,.2f"),
-            "share_local": st.column_config.NumberColumn("Share na UF", format="%.2%%"),
+            "Score_Potencial_Total": st.column_config.NumberColumn("Score de Potencial Total", format="%.2f"),
+            "Exportacao_Atual_FOB": st.column_config.NumberColumn("Exportação Atual (US$)", format="$ %,.2f"),
+            "Produtos_Nao_Explorados": st.column_config.NumberColumn("Produtos Não Explorados", format="%d"),
+        },
+    )
+
+    st.divider()
+
+    st.subheader("🔍 Detalhamento por Estado (UF)")
+
+    st.markdown('<div class="filter-card">', unsafe_allow_html=True)
+    st.markdown('<div class="filter-card-title">🔍 Segmentação Subnacional</div>', unsafe_allow_html=True)
+    
+    col_sel1, col_sel2, col_sel3, col_sel4 = st.columns(4)
+    with col_sel1:
+        uf_target = st.selectbox("Selecione o Estado (UF):", sorted(df_potencial["uf"].unique()))
+
+    df_uf_filtered = df_potencial[df_potencial["uf"] == uf_target]
+
+    with col_sel2:
+        cuci_options = sorted(df_uf_filtered["cuci_desc"].dropna().unique()) if "cuci_desc" in df_uf_filtered.columns else []
+        cuci_target = st.multiselect("CUCI Grupo:", cuci_options)
+    with col_sel3:
+        sh6_options = sorted(df_uf_filtered["sh6_cod"].dropna().unique())
+        sh6_target = st.multiselect("SH6:", sh6_options)
+    with col_sel4:
+        st.markdown('<div class="checkbox-container">', unsafe_allow_html=True)
+        only_new = st.checkbox("Somente NÃO exportados pelo estado", value=False)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    df_uf_seg = df_uf_filtered.copy()
+    if cuci_target and "cuci_desc" in df_uf_seg.columns:
+        df_uf_seg = df_uf_seg[df_uf_seg["cuci_desc"].isin(cuci_target)]
+    if sh6_target:
+        df_uf_seg = df_uf_seg[df_uf_seg["sh6_cod"].isin(sh6_target)]
+    if only_new:
+        df_uf_seg = df_uf_seg[~df_uf_seg["ja_exportado"]]
+
+    st.markdown(f"### Oportunidades Prioritárias para **{uf_target}**")
+
+    top_n = df_uf_seg.sort_values("potencial_score", ascending=False).head(15)
+    if not top_n.empty:
+        label_col = "sh6_desc" if "sh6_desc" in top_n.columns and top_n["sh6_desc"].notna().any() else "sh6_cod"
+        color_col = "cuci_desc" if "cuci_desc" in top_n.columns and top_n["cuci_desc"].notna().any() else None
+        fig_top = px.bar(
+            top_n, x="potencial_score", y=label_col, orientation="h",
+            color=color_col,
+            title=f"Top produtos por potencial de diversificação — {uf_target}",
+            labels={"potencial_score": "Score de Potencial", label_col: "Produto (SH6)", "cuci_desc": "CUCI Grupo"},
+            template="plotly_white",
+        )
+        fig_top.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", yaxis=dict(categoryorder="total ascending"))
+        st.plotly_chart(fig_top, use_container_width=True)
+
+    disp_cols = ["sh6_cod", "sh6_desc", "cuci_desc", "rca", "rsca", "valor_fob", "share_local", "potencial_score", "ja_exportado"]
+    available_disp_cols = [c for c in disp_cols if c in df_uf_seg.columns]
+
+    st.dataframe(
+        df_uf_seg[available_disp_cols].sort_values("potencial_score", ascending=False).head(50),
+        column_config={
+            "rca": st.column_config.NumberColumn("RCA Médio", format="%.2f"),
+            "rsca": st.column_config.NumberColumn("RSCA Médio", format="%.2f"),
+            "valor_fob": st.column_config.NumberColumn("Valor FOB (US$)", format="$ %,.2f"),
+            "share_local": st.column_config.NumberColumn("Participação Local", format="%.2%%"),
             "potencial_score": st.column_config.NumberColumn("Score Potencial", format="%.2f"),
         },
-        use_container_width=True,
-        height=400,
+        height=420,
     )
 
 
 # ==============================================================================
-# 7. ROTEAMENTO
+# 7. ROTEADOR DE PÁGINAS
 # ==============================================================================
 
 if PAGE == "📊 RCA/RSCA Global (UN Comtrade)":
