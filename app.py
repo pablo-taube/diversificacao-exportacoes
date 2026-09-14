@@ -2,7 +2,7 @@
 """
 ==============================================================================
  SISTEMA DE ANÁLISE DE DIVERSIFICAÇÃO DAS EXPORTAÇÕES BRASILEIRAS
- (Glassmorfismo Cupertino) — v4 (Gráficos Separados para RCA e RSCA)
+ (Cupertino Clean Glassmorphism Executive Edition) — v5
 ==============================================================================
 """
 from __future__ import annotations
@@ -31,7 +31,6 @@ st.set_page_config(
 # ==============================================================================
 
 def normalize_text(s) -> str:
-    """Normaliza texto: remove acentos, minúsculas, troca não-alfanuméricos por '_'."""
     if s is None:
         return ""
     s = str(s)
@@ -43,13 +42,11 @@ def normalize_text(s) -> str:
 
 
 def is_world_label(value) -> bool:
-    """Detecta se um rótulo de país representa o agregado 'Mundo'/'World'."""
     nv = normalize_text(value)
     return nv in ("world", "mundo") or nv.startswith("world") or nv.startswith("mundo")
 
 
 def detect_world_label(values) -> str | None:
-    """Retorna o primeiro valor de uma lista que representa 'World'/'Mundo', se existir."""
     for v in values:
         if is_world_label(v):
             return v
@@ -125,7 +122,7 @@ def format_num(x, decimals=2):
 
 
 # ==============================================================================
-# 2. PADRONIZAÇÃO COMEXSTAT
+# 2. PADRONIZAÇÃO COMEXSTAT & COMTRADE
 # ==============================================================================
 
 COMEXSTAT_FIELD_KEYWORDS = {
@@ -206,10 +203,6 @@ def standardize_comexstat(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# ==============================================================================
-# 3. PADRONIZAÇÃO COMTRADE
-# ==============================================================================
-
 def standardize_comtrade(
     df: pd.DataFrame,
     year_col: str,
@@ -256,10 +249,10 @@ def standardize_comtrade(
 
 
 # ==============================================================================
-# 4. MOTOR DE CÁLCULO DE MÉTRICAS BILATERAIS (RCA E RSCA POR PARTNER)
+# 3. CÁLCULO DE MÉTRICAS BILATERAIS
 # ==============================================================================
 
-@st.cache_data(show_spinner="Calculando RCA/RSCA por Partner...")
+@st.cache_data(show_spinner="Calculando métricas por parceiro...")
 def compute_comtrade_metrics(comtrade_tidy: pd.DataFrame, years: tuple) -> pd.DataFrame:
     years = tuple(sorted(set(int(y) for y in years)))
     df_filtered = comtrade_tidy[comtrade_tidy["ano"].isin(years)].copy()
@@ -400,7 +393,7 @@ def compute_state_diversification_potentials(
 
 
 # ==============================================================================
-# 5. ESTRUTURA VISUAL (DESIGN CUPERTINO, PASTEL & GLASSMORPHISM)
+# 4. DESIGN CUPERTINO EXECUTIVE (GLASSMORPHISM & SKYMETRICS INSPIRATION)
 # ==============================================================================
 
 def inject_custom_css():
@@ -409,92 +402,102 @@ def inject_custom_css():
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
 
-        html, body, [class*="css"] {
+        /* Fundo Limpo Executivo inspirados na dashboard Skymetrics */
+        html, body, [class*="st-"] {
             font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Plus Jakarta Sans", sans-serif;
-            background-color: #f6f8fa;
-            color: #1c1c1e;
+            background-color: #f2f4f7 !important;
+            color: #111827;
         }
 
         .block-container {
-            padding-top: 1.8rem;
+            padding-top: 2rem;
             padding-bottom: 3.5rem;
-            max-width: 95%;
+            max-width: 96%;
         }
 
+        /* Sidebar Glassmorphism */
         [data-testid="stSidebar"] {
-            background: rgba(255, 255, 255, 0.45) !important;
-            backdrop-filter: blur(25px) saturate(190%) !important;
-            -webkit-backdrop-filter: blur(25px) saturate(190%) !important;
-            border-right: 1px solid rgba(255, 255, 255, 0.7) !important;
+            background: rgba(255, 255, 255, 0.75) !important;
+            backdrop-filter: blur(20px) saturate(180%) !important;
+            -webkit-backdrop-filter: blur(20px) saturate(180%) !important;
+            border-right: 1px solid rgba(230, 235, 240, 0.9) !important;
         }
 
-        .stat-row {
-            display: flex;
-            gap: 32px;
-            flex-wrap: wrap;
-            margin: 12px 0 28px 0;
-            padding: 20px 28px;
-            background: rgba(255, 255, 255, 0.55);
-            backdrop-filter: blur(16px) saturate(180%);
-            -webkit-backdrop-filter: blur(16px);
-            border-radius: 22px;
-            border: 1px solid rgba(255, 255, 255, 0.8);
-            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.02);
+        /* Cards Estilo Cupertino Skymetrics */
+        .metric-card {
+            background: #ffffff;
+            border-radius: 18px;
+            padding: 22px 26px;
+            border: 1px solid #eaecf0;
+            box-shadow: 0px 4px 12px rgba(16, 24, 40, 0.03);
+            margin-bottom: 20px;
+            transition: all 0.2s ease-in-out;
         }
 
-        .stat-item .stat-value {
-            font-size: 2.2rem;
-            font-weight: 800;
-            line-height: 1.1;
-            letter-spacing: -0.03em;
-            color: #1d1d1f;
+        .metric-card:hover {
+            box-shadow: 0px 10px 24px rgba(16, 24, 40, 0.06);
+            transform: translateY(-2px);
         }
 
-        .stat-item .stat-label {
-            font-size: 0.78rem;
+        .metric-card .label {
+            font-size: 0.82rem;
             font-weight: 600;
-            color: #86868b;
-            margin-top: 5px;
+            color: #667085;
             text-transform: uppercase;
-            letter-spacing: 0.05em;
+            letter-spacing: 0.03em;
+            margin-bottom: 8px;
         }
 
-        .quadrant-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            margin: 14px 0 28px 0;
-        }
-
-        @media (max-width: 960px) {
-            .quadrant-grid { grid-template-columns: 1fr; }
-        }
-
-        .quadrant-card {
-            border-radius: 24px;
-            padding: 26px 30px;
-            backdrop-filter: blur(25px) saturate(180%);
-            -webkit-backdrop-filter: blur(25px) saturate(180%);
-            border: 1px solid rgba(255, 255, 255, 0.9);
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.02);
+        .metric-card .value-container {
             display: flex;
-            flex-direction: column;
+            align-items: baseline;
             justify-content: space-between;
-            min-height: 210px;
-            transition: all 0.25s ease;
         }
 
-        .stButton>button {
-            border-radius: 14px !important;
-            font-weight: 600 !important;
-            border: 1px solid rgba(255, 255, 255, 0.8) !important;
-            background: rgba(255, 255, 255, 0.7) !important;
-            backdrop-filter: blur(10px) !important;
-            transition: all 0.2s ease !important;
+        .metric-card .value {
+            font-size: 2rem;
+            font-weight: 800;
+            color: #101828;
+            letter-spacing: -0.03em;
+            line-height: 1.1;
         }
+
+        .metric-card .badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 10px;
+            border-radius: 999px;
+            font-size: 0.75rem;
+            font-weight: 700;
+        }
+
+        .badge-green { background: #ecfdf5; color: #10b981; }
+        .badge-blue { background: #eff6ff; color: #3b82f6; }
+        .badge-amber { background: #fef3c7; color: #f59e0b; }
+
+        /* Estilização dos Botões */
+        .stButton>button {
+            border-radius: 12px !important;
+            font-weight: 600 !important;
+            border: 1px solid #d0d5dd !important;
+            background: #ffffff !important;
+            color: #344054 !important;
+            box-shadow: 0px 1px 2px rgba(16, 24, 40, 0.05) !important;
+            transition: all 0.2s ease !important;
+            padding: 8px 16px !important;
+        }
+        
         .stButton>button:hover {
-            background: rgba(255, 255, 255, 0.95) !important;
-            transform: scale(1.01);
+            background: #f9fafb !important;
+            border-color: #98a2b3 !important;
+            color: #101828 !important;
+        }
+
+        /* Estilização de Tabelas e Containers */
+        div[data-testid="stForm"] {
+            border-radius: 18px;
+            border: 1px solid #eaecf0;
+            background: #ffffff;
         }
         </style>
         """,
@@ -504,20 +507,14 @@ def inject_custom_css():
 
 PASTEL_COLORS = {
     "green_main": "#10b981",
-    "green_bg": "rgba(236, 253, 245, 0.75)",
-    "amber_main": "#f59e0b",
-    "amber_bg": "rgba(254, 243, 199, 0.75)",
     "blue_main": "#3b82f6",
-    "blue_bg": "rgba(239, 246, 255, 0.75)",
+    "amber_main": "#f59e0b",
     "red_main": "#ef4444",
-    "red_bg": "rgba(254, 242, 242, 0.75)",
-    "gray_main": "#9ca3af",
-    "gray_bg": "rgba(243, 244, 246, 0.75)",
 }
 
 
 # ==============================================================================
-# 6. GERENCIAMENTO DE ESTADO E SIDEBAR
+# 5. SIDEBAR & ESTADO DA APLICAÇÃO
 # ==============================================================================
 
 inject_custom_css()
@@ -619,13 +616,13 @@ if "raw_comtrade" in st.session_state:
                     st.error(f"Falha ao processar a base do Comtrade: {exc}")
 
 # ==============================================================================
-# 7. MÓDULOS DA APLICAÇÃO
+# 6. MÓDULOS DA APLICAÇÃO
 # ==============================================================================
 
 # --- PÁGINA 1: UN COMTRADE RCA / RSCA ---
 def page_comtrade_global():
-    st.title("📊 Análise de RCA e RSCA por Partner (UN Comtrade)")
-    st.caption("Cálculo de Vantagem Comparativa Revelada (Balassa) e Simétrica (Laursen) calculada individualmente por Parceiro Comercial.")
+    st.title("📊 Análise de RCA e RSCA por Partner")
+    st.caption("Painel Executivo de Vantagens Comparativas Bilaterais (Balassa & Laursen)")
 
     if "comtrade_tidy" not in st.session_state:
         st.info("👈 Por favor, carregue e processe o arquivo do UN Comtrade na barra lateral.")
@@ -652,11 +649,11 @@ def page_comtrade_global():
 
     f_col1, f_col2, f_col3, f_col4 = st.columns(4)
     with f_col1:
-        reps = st.multiselect("Filtrar por Reporter (País):", sorted(df_metrics["reporter"].unique()))
+        reps = st.multiselect("Reporter (País):", sorted(df_metrics["reporter"].unique()))
     with f_col2:
-        prts = st.multiselect("Filtrar por Partner (Parceiro):", sorted(df_metrics["partner"].unique()))
+        prts = st.multiselect("Partner (Parceiro):", sorted(df_metrics["partner"].unique()))
     with f_col3:
-        sh6s = st.multiselect("Filtrar por SH6:", sorted(df_metrics["sh6"].unique()))
+        sh6s = st.multiselect("SH6:", sorted(df_metrics["sh6"].unique()))
     with f_col4:
         only_advantage = st.checkbox("Apenas com RCA por Partner >= 1")
 
@@ -670,45 +667,83 @@ def page_comtrade_global():
     if only_advantage:
         filtered_df = filtered_df[filtered_df["rca_partner"] >= 1.0]
 
-    html_stats = f"""
-    <div class="stat-row">
-        <div class="stat-item">
-            <div class="stat-value">{len(filtered_df):,}</div>
-            <div class="stat-label">Registros Processados</div>
-        </div>
-        <div class="stat-item">
-            <div class="stat-value">{format_num(filtered_df['rca_partner'].mean(), 2)}</div>
-            <div class="stat-label">Média do RCA por Partner</div>
-        </div>
-        <div class="stat-item">
-            <div class="stat-value">{format_num(filtered_df['rsca_partner'].mean(), 2)}</div>
-            <div class="stat-label">Média do RSCA por Partner</div>
-        </div>
-    </div>
-    """
-    st.markdown(html_stats, unsafe_allow_html=True)
+    # Cards de Métricas Estilo Skymetrics Executive
+    c_m1, c_m2, c_m3 = st.columns(3)
+    with c_m1:
+        st.markdown(
+            f"""
+            <div class="metric-card">
+                <div class="label">Registros Analisados</div>
+                <div class="value-container">
+                    <div class="value">{len(filtered_df):,}</div>
+                    <span class="badge badge-blue">Tidy Base</span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True
+        )
 
-    st.subheader("Resultados Detalhados por Partner")
+    with c_m2:
+        rca_avg = filtered_df['rca_partner'].mean()
+        st.markdown(
+            f"""
+            <div class="metric-card">
+                <div class="label">Média do RCA Bilateral</div>
+                <div class="value-container">
+                    <div class="value">{format_num(rca_avg, 2)}</div>
+                    <span class="badge badge-green">Balassa</span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True
+        )
+
+    with c_m3:
+        rsca_avg = filtered_df['rsca_partner'].mean()
+        st.markdown(
+            f"""
+            <div class="metric-card">
+                <div class="label">Média do RSCA Bilateral</div>
+                <div class="value-container">
+                    <div class="value">{format_num(rsca_avg, 2)}</div>
+                    <span class="badge badge-amber">Laursen</span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True
+        )
+
+    st.subheader("Resultados Detalhados com Rótulo Dinâmico por Parceiro")
     
+    # Criar DataFrame com nomes de parceiro dinâmicos no cabeçalho das colunas calculadas
+    display_df = filtered_df.copy()
+    
+    # Se houver apenas 1 parceiro selecionado nos filtros, colocar o nome no título. Caso contrário, usar nome geral.
+    partner_title = prts[0] if len(prts) == 1 else "Parceiro Selecionado"
+    
+    rca_col_name = f"RCA ({partner_title})"
+    rsca_col_name = f"RSCA ({partner_title})"
+
+    display_df = display_df.rename(columns={
+        "rca_partner": rca_col_name,
+        "rsca_partner": rsca_col_name
+    })
+
     st.dataframe(
-        filtered_df,
+        display_df,
         column_config={
             "valor": st.column_config.NumberColumn("Valor (US$)", format="$ %,.2f"),
             "mundo_valor": st.column_config.NumberColumn("Mundo Valor (US$)", format="$ %,.2f"),
-            "rca_partner": st.column_config.NumberColumn("RCA por Partner", format="%.4f"),
-            "rsca_partner": st.column_config.NumberColumn("RSCA por Partner", format="%.4f"),
+            rca_col_name: st.column_config.NumberColumn(rca_col_name, format="%.4f"),
+            rsca_col_name: st.column_config.NumberColumn(rsca_col_name, format="%.4f"),
             "ano": st.column_config.NumberColumn("Ano", format="%d"),
             "partner": "Parceiro Comercial",
             "reporter": "País Declarante",
         },
-        height=350,
+        height=380,
     )
 
     st.divider()
 
-    # --- GRÁFICOS SEPARADOS PARA RCA E RSCA ---
-    st.subheader("📈 Análise de Distribuição e Desempenho (RCA vs RSCA)")
-    
+    # --- GRÁFICOS SEPARADOS ---
+    st.subheader("📈 Análise Comparativa Executiva")
     chart_col1, chart_col2 = st.columns(2)
 
     with chart_col1:
@@ -716,31 +751,31 @@ def page_comtrade_global():
         fig_rca = px.histogram(
             filtered_df, x="rca_partner", color="partner",
             hover_data=["sh6_desc", "reporter"],
-            title="Distribuição das Vantagens Comparativas (RCA)",
-            labels={"rca_partner": "Índice RCA por Partner", "partner": "Parceiro"},
+            title="Distribuição do RCA por Partner",
+            labels={"rca_partner": "Índice RCA", "partner": "Parceiro"},
             template="plotly_white",
             nbins=30,
         )
         fig_rca.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-        fig_rca.add_vline(x=1.0, line_dash="dash", line_color=PASTEL_COLORS["blue_main"], annotation_text="Limiar de Vantagem (RCA = 1)")
+        fig_rca.add_vline(x=1.0, line_dash="dash", line_color=PASTEL_COLORS["blue_main"])
         st.plotly_chart(fig_rca, use_container_width=True)
 
     with chart_col2:
-        st.markdown("#### **Índice RSCA (Laursen - Simétrico)**")
+        st.markdown("#### **Índice RSCA (Laursen Simétrico)**")
         fig_rsca = px.box(
             filtered_df, x="partner", y="rsca_partner", color="partner",
             hover_data=["sh6_desc", "reporter"],
-            title="Amplitude do Índice RSCA Simétrico por Partner (-1 a +1)",
-            labels={"rsca_partner": "RSCA por Partner", "partner": "Parceiro"},
+            title="Amplitude do RSCA Simétrico (-1 a +1)",
+            labels={"rsca_partner": "Índice RSCA", "partner": "Parceiro"},
             template="plotly_white",
         )
         fig_rsca.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", showlegend=False)
-        fig_rsca.add_hline(y=0, line_dash="dash", line_color=PASTEL_COLORS["red_main"], annotation_text="Ponto Neutro (RSCA = 0)")
+        fig_rsca.add_hline(y=0, line_dash="dash", line_color=PASTEL_COLORS["red_main"])
         st.plotly_chart(fig_rsca, use_container_width=True)
 
     if len(years_range) > 1:
         st.divider()
-        st.subheader("📉 Evolução Temporal Separada (RCA e RSCA)")
+        st.subheader("📉 Evolução Temporal de Métricas Bilaterais")
         
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -763,32 +798,32 @@ def page_comtrade_global():
             with t_col1:
                 fig_trend_rca = px.line(
                     trend_df, x="ano", y="rca_partner", markers=True,
-                    title=f"Evolução do RCA — {trend_reporter} x {trend_partner} — SH6 {trend_sh6}",
-                    labels={"rca_partner": "Índice RCA", "ano": "Ano"},
+                    title=f"Evolução RCA — {trend_reporter} x {trend_partner}",
+                    labels={"rca_partner": f"RCA ({trend_partner})", "ano": "Ano"},
                     template="plotly_white",
                 )
                 fig_trend_rca.update_traces(line_color=PASTEL_COLORS["blue_main"])
                 fig_trend_rca.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-                fig_trend_rca.add_hline(y=1.0, line_dash="dot", line_color=PASTEL_COLORS["amber_main"], annotation_text="RCA = 1.0")
+                fig_trend_rca.add_hline(y=1.0, line_dash="dot", line_color=PASTEL_COLORS["amber_main"])
                 st.plotly_chart(fig_trend_rca, use_container_width=True)
 
             with t_col2:
                 fig_trend_rsca = px.line(
                     trend_df, x="ano", y="rsca_partner", markers=True,
-                    title=f"Evolução do RSCA — {trend_reporter} x {trend_partner} — SH6 {trend_sh6}",
-                    labels={"rsca_partner": "Índice RSCA", "ano": "Ano"},
+                    title=f"Evolução RSCA — {trend_reporter} x {trend_partner}",
+                    labels={"rsca_partner": f"RSCA ({trend_partner})", "ano": "Ano"},
                     template="plotly_white",
                 )
                 fig_trend_rsca.update_traces(line_color=PASTEL_COLORS["green_main"])
                 fig_trend_rsca.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-                fig_trend_rsca.add_hline(y=0.0, line_dash="dot", line_color=PASTEL_COLORS["red_main"], annotation_text="RSCA = 0.0")
+                fig_trend_rsca.add_hline(y=0.0, line_dash="dot", line_color=PASTEL_COLORS["red_main"])
                 st.plotly_chart(fig_trend_rsca, use_container_width=True)
 
 
 # --- PÁGINA 2: CRUZAMENTO BRASIL COMEXSTAT X COMTRADE ---
 def page_comexstat_cross():
-    st.title("🇧🇷 Cruzamento das Exportações do Brasil com Competitividade Global")
-    st.caption("Cruzamento entre a pauta detalhada do ComexStat e os índices globais de RCA/RSCA por parceiro comercial.")
+    st.title("🇧🇷 Cruzamento Pauta Brasil x Competitividade Global")
+    st.caption("Alinhamento estratégico entre a pauta nacional e o RCA/RSCA médio bilateral")
 
     if "comexstat" not in st.session_state or "comtrade_tidy" not in st.session_state:
         st.warning("⚠️ É necessário carregar AMBOS os arquivos (ComexStat Brasil e UN Comtrade) na barra lateral.")
@@ -827,7 +862,7 @@ def page_comexstat_cross():
     merged["rca"] = merged["rca"].fillna(0)
     merged["rsca"] = merged["rsca"].fillna(-1)
 
-    st.subheader("🔍 Filtros de Segmentação da Pauta Exportadora")
+    st.subheader("🔍 Filtros da Pauta Exportadora")
     col1, col2, col3 = st.columns(3)
     with col1:
         f_sh6 = st.multiselect("SH6:", sorted(merged["sh6_cod"].dropna().unique()))
@@ -850,25 +885,47 @@ def page_comexstat_cross():
     val_tot = df_f["valor_fob"].sum()
     produtos_vantagem = df_f[df_f["rca"] >= 1.0]["sh6_cod"].nunique()
 
-    html_stats = f"""
-    <div class="stat-row">
-        <div class="stat-item">
-            <div class="stat-value">{format_usd(val_tot)}</div>
-            <div class="stat-label">Valor Total Exportado (FOB)</div>
-        </div>
-        <div class="stat-item">
-            <div class="stat-value">{df_f['sh6_cod'].nunique():,}</div>
-            <div class="stat-label">Total de Produtos SH6</div>
-        </div>
-        <div class="stat-item">
-            <div class="stat-value" style="color:{PASTEL_COLORS['green_main']};">{produtos_vantagem:,}</div>
-            <div class="stat-label">Produtos com RCA Médio ≥ 1</div>
-        </div>
-    </div>
-    """
-    st.markdown(html_stats, unsafe_allow_html=True)
+    c_m1, c_m2, c_m3 = st.columns(3)
+    with c_m1:
+        st.markdown(
+            f"""
+            <div class="metric-card">
+                <div class="label">Valor Exportado (FOB)</div>
+                <div class="value-container">
+                    <div class="value">{format_usd(val_tot)}</div>
+                    <span class="badge badge-blue">ComexStat</span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True
+        )
 
-    st.subheader("📊 Distribuição de Exportação x Competitividade por Setor")
+    with c_m2:
+        st.markdown(
+            f"""
+            <div class="metric-card">
+                <div class="label">Produtos Monitorados</div>
+                <div class="value-container">
+                    <div class="value">{df_f['sh6_cod'].nunique():,}</div>
+                    <span class="badge badge-amber">SH6</span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True
+        )
+
+    with c_m3:
+        st.markdown(
+            f"""
+            <div class="metric-card">
+                <div class="label">Produtos Competitivos</div>
+                <div class="value-container">
+                    <div class="value">{produtos_vantagem:,}</div>
+                    <span class="badge badge-green">RCA ≥ 1.0</span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True
+        )
+
+    st.subheader("📊 Distribuição de Exportação por Setor")
     group_opt = st.selectbox("Agrupar Visualização por:", ["CUCI Grupo", "ISIC Divisão", "ISIC Seção", "CGCE Nível 1", "CGCE Nível 2"])
 
     col_map = {
@@ -927,8 +984,8 @@ def page_comexstat_cross():
 
 # --- PÁGINA 3: POTENCIAL DE DIVERSIFICAÇÃO POR ESTADO (UF) ---
 def page_state_diversification():
-    st.title("🗺️ Potencial de Diversificação Exportadora por Estado (UF)")
-    st.caption("Cruzamento subnacional para identificar produtos com alta competitividade nacional (RCA ≥ 1) subaproveitados nos estados.")
+    st.title("🗺️ Potencial de Diversificação por Estado (UF)")
+    st.caption("Cruzamento subnacional para identificação de produtos estratégicos subaproveitados")
 
     if "comexstat_uf" not in st.session_state or "comtrade_tidy" not in st.session_state:
         st.warning("⚠️ É necessário carregar a planilha do ComexStat por Estado (UF) e o UN Comtrade.")
@@ -958,56 +1015,38 @@ def page_state_diversification():
         )
         return
 
-    st.subheader("🧭 Radar de Oportunidades Estaduais (Matriz de Vantagem & Presença)")
-
     n_alto_potencial = df_potencial[(df_potencial["potencial_score"] > 1.0) & (~df_potencial["ja_exportado"])]["sh6_cod"].nunique()
     n_vantagem_nacional = df_potencial["sh6_cod"].nunique()
     val_mercado_oportunidade = df_potencial[(df_potencial["potencial_score"] > 1.0) & (~df_potencial["ja_exportado"])].drop_duplicates("sh6_cod")["mundo_valor"].sum()
 
-    html_quadrants = f"""
-    <div class="quadrant-grid">
-        <div class="quadrant-card" style="background:{PASTEL_COLORS['green_bg']}; border-color:rgba(16, 185, 129, 0.3);">
-            <div>
-                <div class="qc-title" style="color:{PASTEL_COLORS['green_main']};">
-                    <span class="qc-dot" style="background:{PASTEL_COLORS['green_main']};"></span>Alta Oportunidade Local
-                </div>
-                <div class="qc-desc">Combinações Estado x Produto em que o Brasil possui vantagem comparativa global (RCA ≥ 1), mas o estado ainda não exporta o produto.</div>
-            </div>
-            <div class="qc-bottom">
-                <div>
-                    <div class="qc-count">{n_alto_potencial:,}</div>
-                    <div class="qc-count-label">produtos-chave (média nacional)</div>
-                </div>
-                <div>
-                    <div class="qc-value">{format_usd(val_mercado_oportunidade)}</div>
-                    <div class="qc-pill" style="background:rgba(16, 185, 129, 0.15); color:{PASTEL_COLORS['green_main']};">Demanda Global</div>
+    c_m1, c_m2 = st.columns(2)
+    with c_m1:
+        st.markdown(
+            f"""
+            <div class="metric-card">
+                <div class="label">Oportunidades Locais de Alta Prioridade</div>
+                <div class="value-container">
+                    <div class="value">{n_alto_potencial:,}</div>
+                    <span class="badge badge-green">Demanda {format_usd(val_mercado_oportunidade)}</span>
                 </div>
             </div>
-        </div>
+            """, unsafe_allow_html=True
+        )
 
-        <div class="quadrant-card" style="background:{PASTEL_COLORS['blue_bg']}; border-color:rgba(59, 130, 246, 0.3);">
-            <div>
-                <div class="qc-title" style="color:{PASTEL_COLORS['blue_main']};">
-                    <span class="qc-dot" style="background:{PASTEL_COLORS['blue_main']};"></span>Vantagem Comparativa Nacional
-                </div>
-                <div class="qc-desc">Total de produtos no portfólio brasileiro com alto índice de especialização e inserção no comércio internacional, avaliados em todos os estados.</div>
-            </div>
-            <div class="qc-bottom">
-                <div>
-                    <div class="qc-count">{n_vantagem_nacional:,}</div>
-                    <div class="qc-count-label">produtos competitivos</div>
-                </div>
-                <div>
-                    <div class="qc-value">RCA ≥ 1.0</div>
-                    <div class="qc-pill" style="background:rgba(59, 130, 246, 0.15); color:{PASTEL_COLORS['blue_main']};">Base Brasil</div>
+    with c_m2:
+        st.markdown(
+            f"""
+            <div class="metric-card">
+                <div class="label">Produtos no Portfólio Nacional Competitivo</div>
+                <div class="value-container">
+                    <div class="value">{n_vantagem_nacional:,}</div>
+                    <span class="badge badge-blue">RCA ≥ 1.0</span>
                 </div>
             </div>
-        </div>
-    </div>
-    """
-    st.markdown(html_quadrants, unsafe_allow_html=True)
+            """, unsafe_allow_html=True
+        )
 
-    st.subheader("🏆 Ranking de Estados por Score de Potencial de Diversificação")
+    st.subheader("🏆 Ranking Subnacional por Score de Potencial")
 
     rank_uf = df_potencial.groupby("uf").agg(
         Score_Potencial_Total=("potencial_score", "sum"),
@@ -1036,7 +1075,7 @@ def page_state_diversification():
 
     st.divider()
 
-    st.subheader("🔍 Detalhamento e Segmentação por Estado (UF)")
+    st.subheader("🔍 Detalhamento por Estado (UF)")
 
     col_sel1, col_sel2, col_sel3, col_sel4 = st.columns(4)
     with col_sel1:
@@ -1094,7 +1133,7 @@ def page_state_diversification():
 
 
 # ==============================================================================
-# 8. ROTEADOR DE PÁGINAS
+# 7. ROTEADOR DE PÁGINAS
 # ==============================================================================
 
 if PAGE == "📊 RCA/RSCA Global (UN Comtrade)":
