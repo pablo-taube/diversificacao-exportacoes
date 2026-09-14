@@ -393,7 +393,8 @@ def compute_state_diversification_potentials(
 
 
 # ==============================================================================
-# 4. DESIGN EXEC (CORREÇÃO DA SIDEBAR E FILTROS EM CARDS)
+# ==============================================================================
+# 4. DESIGN EXEC — SIDEBAR E FILTROS
 # ==============================================================================
 
 def inject_custom_css():
@@ -402,86 +403,199 @@ def inject_custom_css():
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
 
+        :root {
+            --bg-page: #f5f7fb;
+            --bg-card: #ffffff;
+            --bg-soft: #f8fafc;
+            --border: #e5e7eb;
+            --border-strong: #d1d5db;
+            --text: #111827;
+            --text-soft: #6b7280;
+            --text-muted: #9ca3af;
+            --blue: #3b82f6;
+        }
+
         html, body, [class*="st-"] {
-            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Plus Jakarta Sans", sans-serif;
-            background-color: #f4f6f9 !important;
-            color: #111827;
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display",
+                         "Plus Jakarta Sans", sans-serif;
+        }
+
+        .stApp {
+            background: var(--bg-page) !important;
         }
 
         .block-container {
-            padding-top: 1.8rem;
+            padding-top: 1.75rem;
             padding-bottom: 3rem;
             max-width: 96%;
         }
 
-        /* --- CORREÇÕES RÍGIDAS DA SIDEBAR --- */
+        /* ------------------------------------------------------------------
+           SIDEBAR
+           ------------------------------------------------------------------ */
         [data-testid="stSidebar"] {
-            background-color: #ffffff !important;
-            border-right: 1px solid #e5e7eb !important;
+            background: #ffffff !important;
+            border-right: 1px solid var(--border) !important;
+        }
+
+        [data-testid="stSidebar"] > div:first-child {
+            padding-top: 1.1rem;
+        }
+
+        [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h1,
+        [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h2,
+        [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h3 {
+            color: var(--text) !important;
+            letter-spacing: -0.02em;
+        }
+
+        [data-testid="stSidebar"] [data-testid="stRadio"] {
+            margin-top: 0.25rem;
+        }
+
+        [data-testid="stSidebar"] [data-testid="stRadio"] > div {
+            gap: 0.35rem;
+        }
+
+        [data-testid="stSidebar"] [data-testid="stRadio"] label {
+            border: 1px solid transparent;
+            border-radius: 10px;
+            padding: 0.45rem 0.55rem;
+            transition: background 120ms ease, border-color 120ms ease;
+        }
+
+        [data-testid="stSidebar"] [data-testid="stRadio"] label:hover {
+            background: #f8fafc;
+            border-color: var(--border);
         }
 
         [data-testid="stSidebar"] [data-testid="stFileUploader"] {
-            background: #f9fafb;
-            border: 1px stroke #e5e7eb;
-            border-radius: 12px;
-            padding: 10px;
+            background: var(--bg-soft);
+            border: 1px solid var(--border) !important;
+            border-radius: 12px !important;
+            padding: 0.45rem 0.65rem !important;
+            margin-bottom: 0.55rem;
         }
 
-        /* Oculta ícones de texto quebrado da sidebar */
-        [data-testid="stSidebar"] .material-icons, 
-        [data-testid="stSidebar"] [data-testid="stIcon"] {
-            display: inline-block !important;
+        [data-testid="stSidebar"] [data-testid="stFileUploader"] section {
+            padding: 0 !important;
         }
 
-        /* Estilização limpa do Expander na Sidebar */
-        [data-testid="stSidebar"] .streamlit-expanderHeader {
-            background-color: #f3f4f6 !important;
-            border-radius: 10px !important;
+        [data-testid="stSidebar"] [data-testid="stFileUploader"] small {
+            color: var(--text-muted) !important;
+        }
+
+        [data-testid="stSidebar"] .stFileUploader label {
             font-weight: 600 !important;
             color: #374151 !important;
         }
 
-        /* --- FILTROS EM CARD EXECUTIVO --- */
-        .filter-card {
-            background: #ffffff;
-            border-radius: 16px;
-            padding: 20px 24px;
-            border: 1px solid #e5e7eb;
-            box-shadow: 0px 2px 8px rgba(0, 0, 0, 0.02);
-            margin-bottom: 24px;
+        [data-testid="stSidebar"] .streamlit-expanderHeader {
+            background: var(--bg-soft) !important;
+            border: 1px solid var(--border) !important;
+            border-radius: 11px !important;
+            font-weight: 650 !important;
+            color: #374151 !important;
+        }
+
+        [data-testid="stSidebar"] [data-testid="stExpander"] {
+            border: 0 !important;
+            margin-top: 0.6rem;
+        }
+
+        [data-testid="stSidebar"] [data-testid="stExpander"] > details {
+            border: 0 !important;
+        }
+
+        [data-testid="stSidebar"] .stCaption {
+            color: var(--text-muted) !important;
+            line-height: 1.45;
+        }
+
+        [data-testid="stSidebar"] .stSelectbox,
+        [data-testid="stSidebar"] .stMultiSelect {
+            margin-bottom: 0.35rem;
+        }
+
+        [data-testid="stSidebar"] [data-baseweb="select"] > div {
+            border-radius: 9px !important;
+            border-color: var(--border-strong) !important;
+            background: #ffffff !important;
+        }
+
+        [data-testid="stSidebar"] [data-baseweb="select"] > div:focus-within {
+            border-color: var(--blue) !important;
+            box-shadow: 0 0 0 1px var(--blue) !important;
+        }
+
+        /* ------------------------------------------------------------------
+           FILTROS PRINCIPAIS — CONTAINERS NATIVOS
+           ------------------------------------------------------------------ */
+        [data-testid="stVerticalBlockBorderWrapper"] {
+            background: var(--bg-card) !important;
+            border: 1px solid var(--border) !important;
+            border-radius: 16px !important;
+            box-shadow: 0 2px 10px rgba(15, 23, 42, 0.035) !important;
         }
 
         .filter-card-title {
-            font-size: 0.85rem;
-            font-weight: 700;
+            font-size: 0.78rem;
+            font-weight: 750;
             color: #4b5563;
             text-transform: uppercase;
-            letter-spacing: 0.04em;
-            margin-bottom: 12px;
+            letter-spacing: 0.055em;
+            margin: 0.05rem 0 0.8rem 0;
         }
 
-        /* Adjust Checkbox Vertically in Filter Bar */
+        /* Inputs dos filtros */
+        .stSelectbox label,
+        .stMultiSelect label,
+        .stCheckbox label {
+            color: #374151 !important;
+            font-weight: 600 !important;
+            font-size: 0.82rem !important;
+        }
+
+        [data-baseweb="select"] > div {
+            border-radius: 10px !important;
+            border-color: var(--border-strong) !important;
+            background: #ffffff !important;
+            min-height: 42px;
+        }
+
+        [data-baseweb="select"] > div:focus-within {
+            border-color: var(--blue) !important;
+            box-shadow: 0 0 0 1px var(--blue) !important;
+        }
+
+        /* Checkboxes alinhados com os demais controles */
         .checkbox-container {
+            min-height: 42px;
             display: flex;
             align-items: center;
-            height: 100%;
-            padding-top: 24px;
+            padding-top: 1.55rem;
         }
 
-        /* --- CARDS DE MÉTRICAS (SKYMETRICS STYLE) --- */
+        .checkbox-container .stCheckbox {
+            margin-bottom: 0 !important;
+        }
+
+        /* ------------------------------------------------------------------
+           CARDS DE MÉTRICAS
+           ------------------------------------------------------------------ */
         .metric-card {
-            background: #ffffff;
+            background: var(--bg-card);
             border-radius: 16px;
             padding: 20px 24px;
-            border: 1px solid #e5e7eb;
-            box-shadow: 0px 2px 8px rgba(0, 0, 0, 0.02);
+            border: 1px solid var(--border);
+            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.025);
             margin-bottom: 20px;
         }
 
         .metric-card .label {
             font-size: 0.8rem;
             font-weight: 600;
-            color: #6b7280;
+            color: var(--text-soft);
             text-transform: uppercase;
             letter-spacing: 0.03em;
             margin-bottom: 6px;
@@ -491,12 +605,13 @@ def inject_custom_css():
             display: flex;
             align-items: baseline;
             justify-content: space-between;
+            gap: 12px;
         }
 
         .metric-card .value {
             font-size: 1.9rem;
             font-weight: 800;
-            color: #111827;
+            color: var(--text);
             letter-spacing: -0.02em;
         }
 
@@ -507,26 +622,39 @@ def inject_custom_css():
             border-radius: 999px;
             font-size: 0.75rem;
             font-weight: 700;
+            white-space: nowrap;
         }
 
         .badge-green { background: #ecfdf5; color: #10b981; }
         .badge-blue { background: #eff6ff; color: #3b82f6; }
         .badge-amber { background: #fef3c7; color: #f59e0b; }
 
-        /* Botões */
-        .stButton>button {
+        /* ------------------------------------------------------------------
+           BOTÕES
+           ------------------------------------------------------------------ */
+        .stButton > button {
             border-radius: 10px !important;
-            font-weight: 600 !important;
-            border: 1px solid #d1d5db !important;
+            font-weight: 650 !important;
+            border: 1px solid var(--border-strong) !important;
             background: #ffffff !important;
             color: #374151 !important;
-            box-shadow: 0px 1px 2px rgba(0, 0, 0, 0.05) !important;
+            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04) !important;
+            min-height: 40px;
         }
-        
-        .stButton>button:hover {
-            background: #f9fafb !important;
+
+        .stButton > button:hover {
+            background: #f8fafc !important;
             border-color: #9ca3af !important;
-            color: #111827 !important;
+            color: var(--text) !important;
+        }
+
+        .stButton > button[kind="primary"] {
+            border-color: var(--blue) !important;
+        }
+
+        /* Separadores mais discretos */
+        hr {
+            border-color: var(--border) !important;
         }
         </style>
         """,
@@ -540,30 +668,43 @@ PASTEL_COLORS = {
     "amber_main": "#f59e0b",
     "red_main": "#ef4444",
 }
-
-
-# ==============================================================================
 # 5. SIDEBAR & ESTADO DA APLICAÇÃO
 # ==============================================================================
 
 inject_custom_css()
 
-st.sidebar.title("🌎 Navegação")
-PAGE = st.sidebar.radio(
-    "Selecione o Módulo:",
-    [
-        "📊 RCA/RSCA Global (UN Comtrade)",
-        "🇧🇷 Cruzamento Nacional (ComexStat x Comtrade)",
-        "🗺️ Potencial de Diversificação por Estado (UF)",
-    ],
-)
+with st.sidebar:
+    st.title("🌎 Navegação")
+    st.caption("Sistema de análise de diversificação das exportações brasileiras")
 
-st.sidebar.divider()
-st.sidebar.header("📁 Carga de Dados")
+    PAGE = st.radio(
+        "Módulo",
+        [
+            "📊 RCA/RSCA Global (UN Comtrade)",
+            "🇧🇷 Cruzamento Nacional (ComexStat x Comtrade)",
+            "🗺️ Potencial de Diversificação por Estado (UF)",
+        ],
+    )
 
-file_comtrade = st.sidebar.file_uploader("1. UN Comtrade (CSV, XLSX, Parquet, JSON)", type=["csv", "xlsx", "xls", "parquet", "json"])
-file_comexstat = st.sidebar.file_uploader("2. ComexStat Brasil (Nacional)", type=["csv", "xlsx", "xls", "parquet"])
-file_comexstat_uf = st.sidebar.file_uploader("3. ComexStat por Estado (UF)", type=["csv", "xlsx", "xls", "parquet"])
+    st.divider()
+    st.header("📁 Carga de Dados")
+    st.caption("Carregue as bases necessárias para habilitar cada módulo.")
+
+    file_comtrade = st.file_uploader(
+        "UN Comtrade",
+        type=["csv", "xlsx", "xls", "parquet", "json"],
+        help="Base internacional com Reporter, Partner, SH6 e valor de comércio.",
+    )
+    file_comexstat = st.file_uploader(
+        "ComexStat Brasil — Nacional",
+        type=["csv", "xlsx", "xls", "parquet"],
+        help="Base nacional de exportações brasileiras por SH6.",
+    )
+    file_comexstat_uf = st.file_uploader(
+        "ComexStat Brasil — por UF",
+        type=["csv", "xlsx", "xls", "parquet"],
+        help="Base de exportações por estado e SH6.",
+    )
 
 COMTRADE_FIXED_COLS = {
     "year": "refYear",
@@ -595,7 +736,7 @@ if file_comexstat_uf:
 if "raw_comtrade" in st.session_state:
     df_ct = st.session_state["raw_comtrade"]
     cols = list(df_ct.columns)
-    
+
     col_yr = find_column(df_ct, ["refyear"]) or COMTRADE_FIXED_COLS["year"]
     col_rep = find_column(df_ct, ["reporterdesc"]) or COMTRADE_FIXED_COLS["reporter"]
     col_prt = find_column(df_ct, ["partnerdesc"]) or COMTRADE_FIXED_COLS["partner"]
@@ -603,26 +744,39 @@ if "raw_comtrade" in st.session_state:
     col_desc = find_column(df_ct, ["cmddesc"]) or COMTRADE_FIXED_COLS["sh6_desc"]
 
     with st.sidebar.expander("⚙️ Configurações UN Comtrade", expanded=False):
-        st.caption("📌 **Campos fixos:** refYear, ReporterDesc, PartnerDesc, cmdCode, cmdDesc")
-        
-        value_candidates = [c for c in cols if any(v in normalize_text(c) for v in ["value", "val", "fob", "cif", "primaryvalue"])]
+        st.caption("Mapeamento dos campos e filtros opcionais da base carregada.")
+
+        value_candidates = [
+            c for c in cols
+            if any(v in normalize_text(c) for v in ["value", "val", "fob", "cif", "primaryvalue"])
+        ]
         default_val_idx = cols.index(value_candidates[0]) if value_candidates else 0
-        c_val = st.selectbox("Campo de Valor:", cols, index=default_val_idx)
+        c_val = st.selectbox("Campo de Valor", cols, index=default_val_idx)
 
         if col_prt in df_ct.columns:
             partners_list = sorted(df_ct[col_prt].dropna().astype(str).unique().tolist())
-            sel_partners = st.multiselect("Filtrar Parceiros (vazio = todos):", partners_list, default=[])
+            sel_partners = st.multiselect(
+                "Parceiros",
+                partners_list,
+                default=[],
+                help="Deixe vazio para considerar todos os parceiros.",
+            )
         else:
             sel_partners = []
 
         if col_rep in df_ct.columns:
             reporters_list = sorted(df_ct[col_rep].dropna().astype(str).unique().tolist())
-            sel_reporters = st.multiselect("Filtrar Reporters (vazio = todos):", reporters_list, default=[])
+            sel_reporters = st.multiselect(
+                "Reporters",
+                reporters_list,
+                default=[],
+                help="Deixe vazio para considerar todos os reporters.",
+            )
         else:
             sel_reporters = []
 
         missing_cols = [c for c in [col_yr, col_rep, col_prt, col_sh6] if c not in df_ct.columns]
-        
+
         if missing_cols:
             st.error(f"Colunas ausentes: {', '.join(missing_cols)}")
         else:
@@ -634,7 +788,7 @@ if "raw_comtrade" in st.session_state:
                 except Exception as e:
                     st.error(f"Erro ao processar: {e}")
 
-            if st.button("Aplicar / Re-processar", type="primary"):
+            if st.button("Aplicar / Re-processar", type="primary", use_container_width=True):
                 try:
                     tidy_ct = standardize_comtrade(
                         df_ct, col_yr, col_rep, col_prt, col_sh6, col_desc, c_val, sel_partners, sel_reporters
@@ -644,7 +798,6 @@ if "raw_comtrade" in st.session_state:
                 except Exception as exc:
                     st.error(f"Falha ao processar: {exc}")
 
-# ==============================================================================
 # 6. MÓDULOS DA APLICAÇÃO
 # ==============================================================================
 
@@ -897,21 +1050,19 @@ def page_comexstat_cross():
     merged["rca"] = merged["rca"].fillna(0)
     merged["rsca"] = merged["rsca"].fillna(-1)
 
-    st.markdown('<div class="filter-card">', unsafe_allow_html=True)
-    st.markdown('<div class="filter-card-title">🔍 Filtros de Segmentação</div>', unsafe_allow_html=True)
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        f_sh6 = st.multiselect("SH6:", sorted(merged["sh6_cod"].dropna().unique()))
-        f_cuci = st.multiselect("CUCI Grupo:", sorted(merged["cuci_desc"].dropna().unique()) if "cuci_desc" in merged.columns else [])
-    with col2:
-        f_isic_div = st.multiselect("ISIC Divisão:", sorted(merged["isic_div_desc"].dropna().unique()) if "isic_div_desc" in merged.columns else [])
-        f_isic_sec = st.multiselect("ISIC Seção:", sorted(merged["isic_sec_desc"].dropna().unique()) if "isic_sec_desc" in merged.columns else [])
-    with col3:
-        f_cgce1 = st.multiselect("CGCE Nível 1:", sorted(merged["cgce1_desc"].dropna().unique()) if "cgce1_desc" in merged.columns else [])
-        f_cgce2 = st.multiselect("CGCE Nível 2:", sorted(merged["cgce2_desc"].dropna().unique()) if "cgce2_desc" in merged.columns else [])
+    with st.container(border=True):
+        st.markdown('<div class="filter-card-title">🔍 Filtros de Segmentação</div>', unsafe_allow_html=True)
 
-    st.markdown('</div>', unsafe_allow_html=True)
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            f_sh6 = st.multiselect("SH6", sorted(merged["sh6_cod"].dropna().unique()))
+            f_cuci = st.multiselect("CUCI Grupo", sorted(merged["cuci_desc"].dropna().unique()) if "cuci_desc" in merged.columns else [])
+        with col2:
+            f_isic_div = st.multiselect("ISIC Divisão", sorted(merged["isic_div_desc"].dropna().unique()) if "isic_div_desc" in merged.columns else [])
+            f_isic_sec = st.multiselect("ISIC Seção", sorted(merged["isic_sec_desc"].dropna().unique()) if "isic_sec_desc" in merged.columns else [])
+        with col3:
+            f_cgce1 = st.multiselect("CGCE Nível 1", sorted(merged["cgce1_desc"].dropna().unique()) if "cgce1_desc" in merged.columns else [])
+            f_cgce2 = st.multiselect("CGCE Nível 2", sorted(merged["cgce2_desc"].dropna().unique()) if "cgce2_desc" in merged.columns else [])
 
     df_f = merged.copy()
     if f_sh6: df_f = df_f[df_f["sh6_cod"].isin(f_sh6)]
@@ -1116,27 +1267,25 @@ def page_state_diversification():
 
     st.subheader("🔍 Detalhamento por Estado (UF)")
 
-    st.markdown('<div class="filter-card">', unsafe_allow_html=True)
-    st.markdown('<div class="filter-card-title">🔍 Segmentação Subnacional</div>', unsafe_allow_html=True)
-    
-    col_sel1, col_sel2, col_sel3, col_sel4 = st.columns(4)
-    with col_sel1:
-        uf_target = st.selectbox("Selecione o Estado (UF):", sorted(df_potencial["uf"].unique()))
+    with st.container(border=True):
+        st.markdown('<div class="filter-card-title">🔍 Segmentação Subnacional</div>', unsafe_allow_html=True)
 
-    df_uf_filtered = df_potencial[df_potencial["uf"] == uf_target]
+        col_sel1, col_sel2, col_sel3, col_sel4 = st.columns(4)
+        with col_sel1:
+            uf_target = st.selectbox("Selecione o Estado (UF)", sorted(df_potencial["uf"].unique()))
 
-    with col_sel2:
-        cuci_options = sorted(df_uf_filtered["cuci_desc"].dropna().unique()) if "cuci_desc" in df_uf_filtered.columns else []
-        cuci_target = st.multiselect("CUCI Grupo:", cuci_options)
-    with col_sel3:
-        sh6_options = sorted(df_uf_filtered["sh6_cod"].dropna().unique())
-        sh6_target = st.multiselect("SH6:", sh6_options)
-    with col_sel4:
-        st.markdown('<div class="checkbox-container">', unsafe_allow_html=True)
-        only_new = st.checkbox("Somente NÃO exportados pelo estado", value=False)
-        st.markdown('</div>', unsafe_allow_html=True)
+        df_uf_filtered = df_potencial[df_potencial["uf"] == uf_target]
 
-    st.markdown('</div>', unsafe_allow_html=True)
+        with col_sel2:
+            cuci_options = sorted(df_uf_filtered["cuci_desc"].dropna().unique()) if "cuci_desc" in df_uf_filtered.columns else []
+            cuci_target = st.multiselect("CUCI Grupo", cuci_options)
+        with col_sel3:
+            sh6_options = sorted(df_uf_filtered["sh6_cod"].dropna().unique())
+            sh6_target = st.multiselect("SH6", sh6_options)
+        with col_sel4:
+            st.markdown('<div class="checkbox-container">', unsafe_allow_html=True)
+            only_new = st.checkbox("Somente NÃO exportados pelo estado", value=False)
+            st.markdown('</div>', unsafe_allow_html=True)
 
     df_uf_seg = df_uf_filtered.copy()
     if cuci_target and "cuci_desc" in df_uf_seg.columns:
