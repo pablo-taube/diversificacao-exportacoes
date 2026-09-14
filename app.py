@@ -402,265 +402,58 @@ def inject_custom_css():
         """
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
-
-        :root {
-            --bg-page: #f5f7fb;
-            --bg-card: #ffffff;
-            --bg-soft: #f8fafc;
-            --border: #e5e7eb;
-            --border-strong: #d1d5db;
-            --text: #111827;
-            --text-soft: #6b7280;
-            --text-muted: #9ca3af;
-            --blue: #3b82f6;
-        }
-
-        html, body, [class*="st-"] {
-            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display",
-                         "Plus Jakarta Sans", sans-serif;
-        }
-
-        .stApp {
-            background: var(--bg-page) !important;
-        }
-
-        .block-container {
-            padding-top: 1.75rem;
-            padding-bottom: 3rem;
-            max-width: 96%;
-        }
-
-        /* ------------------------------------------------------------------
-           SIDEBAR
-           ------------------------------------------------------------------ */
-        [data-testid="stSidebar"] {
-            background: #ffffff !important;
-            border-right: 1px solid var(--border) !important;
-        }
-
-        [data-testid="stSidebar"] > div:first-child {
-            padding-top: 1.1rem;
-        }
-
-        [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h1,
-        [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h2,
-        [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h3 {
-            color: var(--text) !important;
-            letter-spacing: -0.02em;
-        }
-
-        [data-testid="stSidebar"] [data-testid="stRadio"] {
-            margin-top: 0.25rem;
-        }
-
-        [data-testid="stSidebar"] [data-testid="stRadio"] > div {
-            gap: 0.35rem;
-        }
-
-        [data-testid="stSidebar"] [data-testid="stRadio"] label {
-            border: 1px solid transparent;
-            border-radius: 10px;
-            padding: 0.45rem 0.55rem;
-            transition: background 120ms ease, border-color 120ms ease;
-        }
-
-        [data-testid="stSidebar"] [data-testid="stRadio"] label:hover {
-            background: #f8fafc;
-            border-color: var(--border);
-        }
-
-        [data-testid="stSidebar"] [data-testid="stFileUploader"] {
-            background: var(--bg-soft);
-            border: 1px solid var(--border) !important;
-            border-radius: 12px !important;
-            padding: 0.45rem 0.65rem !important;
-            margin-bottom: 0.55rem;
-        }
-
-        [data-testid="stSidebar"] [data-testid="stFileUploader"] section {
-            padding: 0 !important;
-        }
-
-        [data-testid="stSidebar"] [data-testid="stFileUploader"] small {
-            color: var(--text-muted) !important;
-        }
-
-        [data-testid="stSidebar"] .stFileUploader label {
-            font-weight: 600 !important;
-            color: #374151 !important;
-        }
-
-        [data-testid="stSidebar"] .streamlit-expanderHeader {
-            background: var(--bg-soft) !important;
-            border: 1px solid var(--border) !important;
-            border-radius: 11px !important;
-            font-weight: 650 !important;
-            color: #374151 !important;
-        }
-
-        [data-testid="stSidebar"] [data-testid="stExpander"] {
-            border: 0 !important;
-            margin-top: 0.6rem;
-        }
-
-        [data-testid="stSidebar"] [data-testid="stExpander"] > details {
-            border: 0 !important;
-        }
-
-        [data-testid="stSidebar"] .stCaption {
-            color: var(--text-muted) !important;
-            line-height: 1.45;
-        }
-
-        [data-testid="stSidebar"] .stSelectbox,
-        [data-testid="stSidebar"] .stMultiSelect {
-            margin-bottom: 0.35rem;
-        }
-
-        [data-testid="stSidebar"] [data-baseweb="select"] > div {
-            border-radius: 9px !important;
-            border-color: var(--border-strong) !important;
-            background: #ffffff !important;
-        }
-
-        [data-testid="stSidebar"] [data-baseweb="select"] > div:focus-within {
-            border-color: var(--blue) !important;
-            box-shadow: 0 0 0 1px var(--blue) !important;
-        }
-
-        /* ------------------------------------------------------------------
-           FILTROS PRINCIPAIS — CONTAINERS NATIVOS
-           ------------------------------------------------------------------ */
-        [data-testid="stVerticalBlockBorderWrapper"] {
-            background: var(--bg-card) !important;
-            border: 1px solid var(--border) !important;
-            border-radius: 16px !important;
-            box-shadow: 0 2px 10px rgba(15, 23, 42, 0.035) !important;
-        }
-
-        .filter-card-title {
-            font-size: 0.78rem;
-            font-weight: 750;
-            color: #4b5563;
-            text-transform: uppercase;
-            letter-spacing: 0.055em;
-            margin: 0.05rem 0 0.8rem 0;
-        }
-
-        /* Inputs dos filtros */
-        .stSelectbox label,
-        .stMultiSelect label,
-        .stCheckbox label {
-            color: #374151 !important;
-            font-weight: 600 !important;
-            font-size: 0.82rem !important;
-        }
-
-        [data-baseweb="select"] > div {
-            border-radius: 10px !important;
-            border-color: var(--border-strong) !important;
-            background: #ffffff !important;
-            min-height: 42px;
-        }
-
-        [data-baseweb="select"] > div:focus-within {
-            border-color: var(--blue) !important;
-            box-shadow: 0 0 0 1px var(--blue) !important;
-        }
-
-        /* Checkboxes alinhados com os demais controles */
-        .checkbox-container {
-            min-height: 42px;
-            display: flex;
-            align-items: center;
-            padding-top: 1.55rem;
-        }
-
-        .checkbox-container .stCheckbox {
-            margin-bottom: 0 !important;
-        }
-
-        /* ------------------------------------------------------------------
-           CARDS DE MÉTRICAS
-           ------------------------------------------------------------------ */
-        .metric-card {
-            background: var(--bg-card);
-            border-radius: 16px;
-            padding: 20px 24px;
-            border: 1px solid var(--border);
-            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.025);
-            margin-bottom: 20px;
-        }
-
-        .metric-card .label {
-            font-size: 0.8rem;
-            font-weight: 600;
-            color: var(--text-soft);
-            text-transform: uppercase;
-            letter-spacing: 0.03em;
-            margin-bottom: 6px;
-        }
-
-        .metric-card .value-container {
-            display: flex;
-            align-items: baseline;
-            justify-content: space-between;
-            gap: 12px;
-        }
-
-        .metric-card .value {
-            font-size: 1.9rem;
-            font-weight: 800;
-            color: var(--text);
-            letter-spacing: -0.02em;
-        }
-
-        .metric-card .badge {
-            display: inline-flex;
-            align-items: center;
-            padding: 4px 10px;
-            border-radius: 999px;
-            font-size: 0.75rem;
-            font-weight: 700;
-            white-space: nowrap;
-        }
-
-        .badge-green { background: #ecfdf5; color: #10b981; }
-        .badge-blue { background: #eff6ff; color: #3b82f6; }
-        .badge-amber { background: #fef3c7; color: #f59e0b; }
-
-        /* ------------------------------------------------------------------
-           BOTÕES
-           ------------------------------------------------------------------ */
-        .stButton > button {
-            border-radius: 10px !important;
-            font-weight: 650 !important;
-            border: 1px solid var(--border-strong) !important;
-            background: #ffffff !important;
-            color: #374151 !important;
-            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04) !important;
-            min-height: 40px;
-        }
-
-        .stButton > button:hover {
-            background: #f8fafc !important;
-            border-color: #9ca3af !important;
-            color: var(--text) !important;
-        }
-
-        .stButton > button[kind="primary"] {
-            border-color: var(--blue) !important;
-        }
-
-        /* Separadores mais discretos */
-        hr {
-            border-color: var(--border) !important;
-        }
+        :root{--bg:#f5f7fb;--card:#fff;--border:#e5e7eb;--border2:#d5dbe5;--text:#101828;--muted:#667085;--blue:#2563eb;--green:#059669;--red:#dc2626;--amber:#d97706;--shadow:0 1px 2px rgba(16,24,40,.03),0 8px 24px rgba(16,24,40,.045)}
+        html,body,[class*="st-"]{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Plus Jakarta Sans",sans-serif}
+        .stApp{background:var(--bg);color:var(--text)}
+        .block-container{max-width:1480px;padding-top:2rem;padding-bottom:3.5rem}
+        h1{font-weight:800!important;letter-spacing:-.045em!important;margin-bottom:.15rem!important} h2,h3{font-weight:750!important;letter-spacing:-.025em!important}
+        /* SIDEBAR */
+        [data-testid="stSidebar"]{background:#fbfcfe!important;border-right:1px solid var(--border)!important}
+        [data-testid="stSidebar"]>div:first-child{padding:1.25rem 1rem 1.5rem}
+        [data-testid="stSidebar"] hr{border-color:var(--border)!important;margin:1rem 0}
+        [data-testid="stSidebar"] [data-testid="stRadio"]>label{font-size:.72rem!important;font-weight:800!important;color:#475467!important;text-transform:uppercase;letter-spacing:.06em}
+        [data-testid="stSidebar"] [role="radiogroup"]{gap:.2rem}
+        [data-testid="stSidebar"] [role="radiogroup"] label{border:1px solid transparent;border-radius:10px;padding:.48rem .55rem;transition:.15s ease}
+        [data-testid="stSidebar"] [role="radiogroup"] label:hover{background:#f1f5f9;border-color:var(--border)}
+        .sidebar-section-title{font-size:.72rem;font-weight:800;letter-spacing:.065em;text-transform:uppercase;color:#344054;margin:.85rem 0 .3rem}
+        .sidebar-file-title{font-size:.77rem;font-weight:750;color:#344054;margin:.65rem 0 .2rem}
+        [data-testid="stSidebar"] [data-testid="stFileUploader"]{margin:0 0 .55rem}
+        [data-testid="stSidebar"] [data-testid="stFileUploader"] section{background:#fff!important;border:1px dashed #c7d0dc!important;border-radius:13px!important;padding:.72rem!important;min-height:78px;box-shadow:0 1px 2px rgba(16,24,40,.025)!important;transition:.15s ease}
+        [data-testid="stSidebar"] [data-testid="stFileUploader"] section:hover{background:#fcfdff!important;border-color:#94a3b8!important;box-shadow:0 4px 14px rgba(16,24,40,.05)!important}
+        [data-testid="stSidebar"] [data-testid="stFileUploader"] section>div{gap:.35rem!important}
+        [data-testid="stSidebar"] [data-testid="stFileUploader"] button{background:#111827!important;color:#fff!important;border:0!important;border-radius:8px!important;min-height:34px!important;padding:0 .8rem!important;font-size:.74rem!important;font-weight:750!important;box-shadow:0 1px 2px rgba(16,24,40,.12)!important}
+        [data-testid="stSidebar"] [data-testid="stFileUploader"] button:hover{background:#1f2937!important}
+        [data-testid="stSidebar"] [data-testid="stFileUploader"] small{color:#98a2b3!important;font-size:.66rem!important}
+        [data-testid="stSidebar"] [data-testid="stFileUploader"] [data-testid="stFileUploaderFile"]{border:1px solid var(--border)!important;border-radius:9px!important;background:#fff!important}
+        [data-testid="stSidebar"] .streamlit-expanderHeader{background:#f8fafc!important;border:1px solid var(--border)!important;border-radius:11px!important;color:#344054!important;font-weight:700!important;font-size:.77rem!important}
+        [data-testid="stSidebar"] .streamlit-expanderContent{background:#fff!important;border:1px solid var(--border)!important;border-top:0!important;border-radius:0 0 11px 11px!important}
+        /* CONTROLS */
+        [data-baseweb="select"]>div,[data-baseweb="input"]>div{border:1px solid var(--border2)!important;border-radius:9px!important;background:#fff!important;box-shadow:none!important}
+        [data-baseweb="select"]>div:hover,[data-baseweb="input"]>div:hover{border-color:#aab4c2!important}
+        [data-baseweb="select"]>div:focus-within,[data-baseweb="input"]>div:focus-within{border-color:#93c5fd!important;box-shadow:0 0 0 3px rgba(37,99,235,.08)!important}
+        [data-testid="stWidgetLabel"] p{font-size:.76rem!important;font-weight:650!important;color:#475467!important}
+        [data-testid="stVerticalBlockBorderWrapper"]{background:#fff!important;border:1px solid var(--border)!important;border-radius:15px!important;box-shadow:var(--shadow)!important}
+        .filter-card-title{font-size:.72rem;font-weight:800;color:#344054;text-transform:uppercase;letter-spacing:.065em;margin:.05rem 0 .7rem}
+        .checkbox-container{min-height:42px;display:flex;align-items:center;padding-top:1.55rem}.checkbox-container .stCheckbox{margin-bottom:0!important}
+        /* KPI */
+        .metric-card{position:relative;background:var(--card);border:1px solid var(--border);border-radius:16px;padding:1rem 1.05rem;min-height:108px;margin-bottom:1rem;box-shadow:var(--shadow);overflow:hidden}
+        .metric-card:before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:#cbd5e1}
+        .metric-card .label{font-size:.67rem;line-height:1.25;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.055em;margin-bottom:.5rem}
+        .metric-card .value-container{display:flex;align-items:flex-end;justify-content:space-between;gap:.45rem}
+        .metric-card .value{font-size:1.68rem;line-height:1;font-weight:800;color:var(--text);letter-spacing:-.035em;white-space:nowrap}
+        .metric-card .badge{display:inline-flex;align-items:center;justify-content:center;padding:.25rem .48rem;border-radius:999px;font-size:.59rem;line-height:1.15;font-weight:800;white-space:nowrap}
+        .badge-green{background:#ecfdf5;color:var(--green)} .badge-blue{background:#eff6ff;color:var(--blue)} .badge-amber{background:#fffbeb;color:var(--amber)} .badge-red{background:#fef2f2;color:var(--red)}
+        .metric-positive:before{background:var(--green)} .metric-negative:before{background:var(--red)} .metric-blue:before{background:var(--blue)} .metric-amber:before{background:var(--amber)}
+        /* BUTTONS */
+        .stButton>button{border-radius:9px!important;min-height:38px!important;font-weight:750!important;font-size:.77rem!important;border:1px solid var(--border2)!important;background:#fff!important;color:#344054!important;box-shadow:0 1px 2px rgba(16,24,40,.04)!important}
+        .stButton>button:hover{background:#f8fafc!important;border-color:#98a2b3!important;color:#111827!important}
+        .stButton>button[kind="primary"]{background:#111827!important;color:#fff!important;border-color:#111827!important}.stButton>button[kind="primary"]:hover{background:#1f2937!important;border-color:#1f2937!important}
+        [data-testid="stDataFrame"]{border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:0 1px 2px rgba(16,24,40,.025)}
+        hr{border-color:var(--border)!important}
         </style>
         """,
         unsafe_allow_html=True,
     )
-
 
 PASTEL_COLORS = {
     "green_main": "#10b981",
@@ -687,22 +480,30 @@ with st.sidebar:
     )
 
     st.divider()
-    st.header("📁 Carga de Dados")
+    st.markdown('<div class="sidebar-section-title">Carga de dados</div>', unsafe_allow_html=True)
     st.caption("Carregue as bases necessárias para habilitar cada módulo.")
 
+    st.markdown('<div class="sidebar-file-title">01 · UN Comtrade</div>', unsafe_allow_html=True)
     file_comtrade = st.file_uploader(
-        "UN Comtrade",
+        "Arquivo UN Comtrade",
         type=["csv", "xlsx", "xls", "parquet", "json"],
-        help="Base internacional com Reporter, Partner, SH6 e valor de comércio.",
+        label_visibility="collapsed",
+        help="CSV, XLSX, XLS, Parquet ou JSON.",
     )
+
+    st.markdown('<div class="sidebar-file-title">02 · ComexStat Brasil — Nacional</div>', unsafe_allow_html=True)
     file_comexstat = st.file_uploader(
-        "ComexStat Brasil — Nacional",
+        "Arquivo ComexStat Nacional",
         type=["csv", "xlsx", "xls", "parquet"],
+        label_visibility="collapsed",
         help="Base nacional de exportações brasileiras por SH6.",
     )
+
+    st.markdown('<div class="sidebar-file-title">03 · ComexStat Brasil — UF</div>', unsafe_allow_html=True)
     file_comexstat_uf = st.file_uploader(
-        "ComexStat Brasil — por UF",
+        "Arquivo ComexStat por UF",
         type=["csv", "xlsx", "xls", "parquet"],
+        label_visibility="collapsed",
         help="Base de exportações por estado e SH6.",
     )
 
@@ -804,7 +605,7 @@ if "raw_comtrade" in st.session_state:
 # --- PÁGINA 1: UN COMTRADE RCA / RSCA ---
 def page_comtrade_global():
     st.title("📊 Análise de RCA e RSCA por Partner")
-    st.caption("Painel Executivo de Vantagens Comparativas Bilaterais (Balassa & Laursen)")
+    st.caption("Inteligência comercial executiva · Vantagens comparativas bilaterais · Balassa & Laursen")
 
     if "comtrade_tidy" not in st.session_state:
         st.info("👈 Por favor, carregue e processe o arquivo do UN Comtrade na barra lateral.")
@@ -1011,7 +812,7 @@ def page_comtrade_global():
 # --- PÁGINA 2: CRUZAMENTO BRASIL COMEXSTAT X COMTRADE ---
 def page_comexstat_cross():
     st.title("🇧🇷 Cruzamento Pauta Brasil x Competitividade Global")
-    st.caption("Alinhamento estratégico entre a pauta nacional e o RCA/RSCA médio bilateral")
+    st.caption("Inteligência comercial executiva · Pauta brasileira versus competitividade global")
 
     if "comexstat" not in st.session_state or "comtrade_tidy" not in st.session_state:
         st.warning("⚠️ É necessário carregar AMBOS os arquivos (ComexStat Brasil e UN Comtrade) na barra lateral.")
@@ -1075,7 +876,13 @@ def page_comexstat_cross():
     val_tot = df_f["valor_fob"].sum()
     produtos_vantagem = df_f[df_f["rca"] >= 1.0]["sh6_cod"].nunique()
 
-    c_m1, c_m2, c_m3 = st.columns(3)
+    # O RCA tem ponto de corte em 1. O RSCA é a versão simétrica do RCA
+    # e está matematicamente limitado ao intervalo [-1, +1]; portanto,
+    # vantagem simultânea é representada por RCA > 1 e RSCA > 0.
+    sh6_rca_rsca_alto = df_f[(df_f["rca"] > 1.0) & (df_f["rsca"] > 0.0)]["sh6_cod"].nunique()
+    sh6_rca_rsca_baixo = df_f[(df_f["rca"] < 1.0) & (df_f["rsca"] < 0.0)]["sh6_cod"].nunique()
+
+    c_m1, c_m2, c_m3, c_m4, c_m5 = st.columns(5)
     with c_m1:
         st.markdown(
             f"""
@@ -1114,6 +921,34 @@ def page_comexstat_cross():
             </div>
             """, unsafe_allow_html=True
         )
+
+    with c_m4:
+        st.markdown(
+            f"""
+            <div class="metric-card metric-positive">
+                <div class="label">SH6 com Vantagem Comparativa</div>
+                <div class="value-container">
+                    <div class="value">{sh6_rca_rsca_alto:,}</div>
+                    <span class="badge badge-green">RCA &gt; 1 · RSCA &gt; 0</span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True
+        )
+
+    with c_m5:
+        st.markdown(
+            f"""
+            <div class="metric-card metric-negative">
+                <div class="label">SH6 com Desvantagem Comparativa</div>
+                <div class="value-container">
+                    <div class="value">{sh6_rca_rsca_baixo:,}</div>
+                    <span class="badge badge-red">RCA &lt; 1 · RSCA &lt; 0</span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True
+        )
+
+    st.caption("Nota metodológica: o RSCA varia entre −1 e +1. Por isso, o corte equivalente ao RCA > 1 é RSCA > 0 (e RCA < 1 corresponde a RSCA < 0).")
 
     st.subheader("📊 Distribuição de Exportação por Setor")
     group_opt = st.selectbox("Agrupar Visualização por:", ["CUCI Grupo", "ISIC Divisão", "ISIC Seção", "CGCE Nível 1", "CGCE Nível 2"])
@@ -1175,7 +1010,7 @@ def page_comexstat_cross():
 # --- PÁGINA 3: POTENCIAL DE DIVERSIFICAÇÃO POR ESTADO (UF) ---
 def page_state_diversification():
     st.title("🗺️ Potencial de Diversificação por Estado (UF)")
-    st.caption("Cruzamento subnacional para identificação de produtos estratégicos subaproveitados")
+    st.caption("Inteligência subnacional · Produtos estratégicos subaproveitados e oportunidades de diversificação")
 
     if "comexstat_uf" not in st.session_state or "comtrade_tidy" not in st.session_state:
         st.warning("⚠️ É necessário carregar a planilha do ComexStat por Estado (UF) e o UN Comtrade.")
